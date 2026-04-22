@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>OpenClaw Canvas</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #1a1a1a;
+            color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        #container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+        }
+        .message {
+            padding: 20px;
+            text-align: center;
+            max-width: 400px;
+        }
+        h1 { font-size: 24px; margin-bottom: 10px; color: #60a5fa; }
+        p { font-size: 14px; color: #9ca3af; line-height: 1.6; }
+        .status {
+            margin-top: 20px;
+            padding: 10px 20px;
+            background: rgba(96, 165, 250, 0.1);
+            border-radius: 8px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div class="message">
+            <h1>OpenClaw Canvas</h1>
+            <p>Canvas 功能正在初始化...</p>
+            <div class="status">等待主应用连接</div>
+        </div>
+    </div>
+    <script>
+        // Canvas Scaffold Placeholder
+        // This is a minimal scaffold for OpenClaw Canvas functionality
+        console.log('Canvas scaffold loaded');
+        
+        // Handle Android bridge communication if available
+        if (window.AndroidBridge) {
+            document.querySelector('.status').textContent = '已连接到 Android Bridge';
+        }
+        
+        // Listen for messages from Android
+        window.addEventListener('message', function(event) {
+            console.log('Received message:', event.data);
+        });
+    </script>
+</body>
+</html>
