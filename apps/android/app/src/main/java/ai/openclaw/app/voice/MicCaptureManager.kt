@@ -12,6 +12,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.core.content.ContextCompat
+import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,9 +52,10 @@ class MicCaptureManager(
 ) {
   companion object {
     private const val tag = "MicCapture"
-    private const val speechMinSessionMs = 30_000L
-    private const val speechCompleteSilenceMs = 1_500L
-    private const val speechPossibleSilenceMs = 900L
+    // Keep sessions short so devices that delay final results still flush quickly.
+    private const val speechMinSessionMs = 3_000L
+    private const val speechCompleteSilenceMs = 1_200L
+    private const val speechPossibleSilenceMs = 700L
     private const val transcriptIdleFlushMs = 1_600L
     private const val maxConversationEntries = 40
     private const val pendingRunTimeoutMs = 45_000L
@@ -339,7 +341,9 @@ class MicCaptureManager(
     val intent =
       Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN") // 设置中文识别
+        val languageTag = Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, languageTag)
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
