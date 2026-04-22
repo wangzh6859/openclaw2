@@ -61,14 +61,24 @@ jobs:
           -POPENCLAW_ANDROID_KEY_ALIAS=openclaw \
           -POPENCLAW_ANDROID_KEY_PASSWORD=${{ steps.keystore.outputs.keystore_pass }}
 
-    - name: Get Version
-      id: get_version
+    - name: Get Version and Build Number
+      id: versioning
       run: |
+        # 获取版本名
         VERSION=$(grep "^[[:space:]]*versionName[[:space:]]*=" apps/android/app/build.gradle.kts | head -1 | sed 's/.*versionName[[:space:]]*=[[:space:]]*["]//;s/["].*//')
-        SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-        TAG_VERSION="${VERSION}-${SHORT_SHA}"
+        
+        # 获取已有 release 数量作为构建号
+        RELEASE_COUNT=$(gh release list --repo ${{ github.repository }} --limit 100 | wc -l)
+        BUILD_NUM=$((RELEASE_COUNT + 1))
+        
+        # 生成 tag 和 release name
+        TAG_VERSION="${VERSION}-${BUILD_NUM}"
+        RELEASE_NAME="OpenClaw v${VERSION} #${BUILD_NUM}"
+        
         echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "build_num=$BUILD_NUM" >> $GITHUB_OUTPUT
         echo "tag_version=$TAG_VERSION" >> $GITHUB_OUTPUT
+        echo "release_name=$RELEASE_NAME" >> $GITHUB_OUTPUT
 
     - name: Generate Changelog
       id: changelog
@@ -76,7 +86,6 @@ jobs:
         # 获取上一次提交的 hash
         PREV_SHA=$(git rev-parse HEAD~1 2>/dev/null || echo "")
         if [ -n "$PREV_SHA" ]; then
-          # 获取两次提交之间的变更
           CHANGES=$(git log --pretty=format:"- %s" ${PREV_SHA}..HEAD 2>/dev/null | head -10)
         else
           CHANGES=$(git log --pretty=format:"- %s" -5 2>/dev/null)
@@ -88,14 +97,15 @@ jobs:
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: v${{ steps.get_version.outputs.tag_version }}
-        name: "OpenClaw v${{ steps.get_version.outputs.version }} (${{ github.sha }})"
+        tag_name: v${{ steps.versioning.outputs.tag_version }}
+        name: "${{ steps.versioning.outputs.release_name }}"
         body: |
           ## OpenClaw Android 构建版本
           
           ### 版本信息
           - **软件名称**: openclaw
-          - **构建版本**: v${{ steps.get_version.outputs.version }}
+          - **构建版本**: ${{ steps.versioning.outputs.release_name }}
+          - **Tag**: v${{ steps.versioning.outputs.tag_version }}
           - **提交哈希**: ${{ github.sha }}
           - **构建时间**: ${{ github.event.head_commit.timestamp }}
           
