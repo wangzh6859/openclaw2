@@ -93,11 +93,13 @@ android {
             if (hasAndroidReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // 暂时关闭混淆以优先修复 Voice 和 Screen 功能
+            isMinifyEnabled = false
+            isShrinkResources = false
             ndk {
                 debugSymbolLevel = "SYMBOL_TABLE"
-                abiFilters += listOf("armeabi-v7a", "arm64-v8a") // 只保留 ARM 架构，减小体积
+                // 保留所有架构以确保兼容性
+                abiFilters += listOf("armeabi-v7a", "arm64-v8a")
             }
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
