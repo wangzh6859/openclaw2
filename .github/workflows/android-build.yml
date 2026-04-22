@@ -28,16 +28,19 @@ jobs:
 
     - name: Check/Generate Keystore
       id: keystore
+      env:
+        GH_TOKEN: ${{ secrets.GH_PAT }}
+        REPO: ${{ github.repository }}
       run: |
         if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ]; then
           echo "No keystore found. Generating..."
           KS_PASS=$(openssl rand -base64 12)
           keytool -genkey -v -keystore openclaw.keystore -alias openclaw -keyalg RSA -keysize 2048 -validity 10000 -storepass "$KS_PASS" -keypass "$KS_PASS" -dname "CN=OpenClaw, OU=AI, O=OpenClaw, L=SH, S=SH, C=CN"
           KS_B64=$(base64 -w 0 openclaw.keystore)
-          echo "$KS_B64" | gh secret set KEYSTORE_BASE64 -r wangzh6859/openclaw2
-          echo "$KS_PASS" | gh secret set KEYSTORE_PASSWORD -r wangzh6859/openclaw2
-          echo "$KS_PASS" | gh secret set KEY_PASSWORD -r wangzh6859/openclaw2
-          echo "openclaw" | gh secret set KEY_ALIAS -r wangzh6859/openclaw2
+          echo "$KS_B64" | gh secret set KEYSTORE_BASE64 -r "$REPO"
+          echo "$KS_PASS" | gh secret set KEYSTORE_PASSWORD -r "$REPO"
+          echo "$KS_PASS" | gh secret set KEY_PASSWORD -r "$REPO"
+          echo "openclaw" | gh secret set KEY_ALIAS -r "$REPO"
           echo "keystore_b64=$KS_B64" >> $GITHUB_OUTPUT
           echo "keystore_pass=$KS_PASS" >> $GITHUB_OUTPUT
         else
