@@ -54,7 +54,7 @@ jobs:
         cd apps/android
         chmod +x gradlew
         ./gradlew assemblePlayRelease assembleThirdPartyRelease \
-          -POPENCLAW_ANDROID_STORE_FILE=../../app/release.keystore \
+          -POPENCLAW_ANDROID_STORE_FILE=app/release.keystore \
           -POPENCLAW_ANDROID_STORE_PASSWORD=${{ steps.keystore.outputs.keystore_pass }} \
           -POPENCLAW_ANDROID_KEY_ALIAS=openclaw \
           -POPENCLAW_ANDROID_KEY_PASSWORD=${{ steps.keystore.outputs.keystore_pass }}
