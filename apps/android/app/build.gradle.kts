@@ -148,24 +148,6 @@ android {
     }
 }
 
-androidComponents {
-    onVariants { variant ->
-        variant.outputs
-            .filterIsInstance<VariantOutputImpl>()
-            .forEach { output ->
-                val versionName = output.versionName.orNull ?: "0"
-                val buildType = variant.buildType
-                val flavorName = variant.flavorName?.takeIf { it.isNotBlank() }
-                val outputFileName =
-                    if (flavorName == null) {
-                        "openclaw-$versionName-$buildType.apk"
-                    } else {
-                        "openclaw-$versionName-$flavorName-$buildType.apk"
-                    }
-                output.outputFileName = outputFileName
-            }
-    }
-}
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
@@ -239,62 +221,3 @@ tasks.withType<Test>().configureEach {
     useJUnitPlatform()
 }
 
-androidComponents {
-    onVariants(selector().withBuildType("release")) { variant ->
-        val variantName = variant.name
-        val variantNameCapitalized = variantName.replaceFirstChar(Char::titlecase)
-        val stripTaskName = "strip${variantNameCapitalized}DnsjavaServiceDescriptor"
-        val mergeTaskName = "merge${variantNameCapitalized}JavaResource"
-        val minifyTaskName = "minify${variantNameCapitalized}WithR8"
-        val mergedJar =
-            layout.buildDirectory.file(
-                "intermediates/merged_java_res/$variantName/$mergeTaskName/base.jar",
-            )
-
-        val stripTask =
-            tasks.register(stripTaskName) {
-                inputs.file(mergedJar)
-                outputs.file(mergedJar)
-
-                doLast {
-                    val jarFile = mergedJar.get().asFile
-                    if (!jarFile.exists()) {
-                        return@doLast
-                    }
-
-                    val unpackDir = temporaryDir.resolve("merged-java-res")
-                    delete(unpackDir)
-                    copy {
-                        from(zipTree(jarFile))
-                        into(unpackDir)
-                        exclude(dnsjavaInetAddressResolverService)
-                    }
-                    delete(jarFile)
-                    ant.invokeMethod(
-                        "zip",
-                        mapOf(
-                            "destfile" to jarFile.absolutePath,
-                            "basedir" to unpackDir.absolutePath,
-                        ),
-                    )
-                }
-            }
-
-        tasks.matching { it.name == mergeTaskName }.configureEach {
-            finalizedBy(stripTask)
-        }
-        tasks.matching { it.name == minifyTaskName }.configureEach {
-            dependsOn(stripTask)
-        }
-    }
-}
-
-// Fix: make package tasks depend on the custom strip task to avoid implicit dependency issues
-androidComponents {
-    onVariants(selector().withBuildType("release")) { variant ->
-        val variantName = variant.name
-        val variantNameCapitalized = variantName.replaceFirstChar(Char::titlecase)
-        val stripTaskName = "strip${variantNameCapitalized}DnsjavaServiceDescriptor"
-        tasks.named("package${variantNameCapitalized}Release").configure { it.dependsOn(stripTaskName) }
-    }
-}
