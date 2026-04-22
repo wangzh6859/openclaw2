@@ -63,15 +63,12 @@ jobs:
 
     - name: Get Version and Build Number
       id: versioning
-      env:
-        GH_TOKEN: ${{ secrets.GH_PAT }}
       run: |
         # 获取版本名
         VERSION=$(grep "^[[:space:]]*versionName[[:space:]]*=" apps/android/app/build.gradle.kts | head -1 | sed 's/.*versionName[[:space:]]*=[[:space:]]*["]//;s/["].*//')
         
-        # 获取已有 release 数量作为构建号
-        RELEASE_COUNT=$(gh release list --repo ${{ github.repository }} --limit 100 | wc -l)
-        BUILD_NUM=$((RELEASE_COUNT + 1))
+        # 使用 GitHub Actions 自带的运行序号作为构建号（无需额外权限）
+        BUILD_NUM=${{ github.run_number }}
         
         # 生成 tag 和 release name
         TAG_VERSION="${VERSION}-${BUILD_NUM}"
