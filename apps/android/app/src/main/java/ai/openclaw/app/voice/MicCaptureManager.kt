@@ -361,7 +361,13 @@ class MicCaptureManager(
         else -> "Listening"
       }
     _isListening.value = true
-    recognizerInstance.startListening(intent)
+    try {
+      recognizerInstance.startListening(intent)
+    } catch (err: Throwable) {
+      _isListening.value = false
+      _statusText.value = "Recognizer start failed: ${err.message ?: err::class.simpleName}"
+      scheduleRestart(delayMs = 1200L)
+    }
   }
 
   private fun scheduleRestart(delayMs: Long = 300L) {
@@ -630,10 +636,10 @@ class MicCaptureManager(
             SpeechRecognizer.ERROR_CLIENT -> "Client error"
             SpeechRecognizer.ERROR_NETWORK -> "Network error"
             SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
-            SpeechRecognizer.ERROR_NO_MATCH -> "Listening"
+            SpeechRecognizer.ERROR_NO_MATCH -> "No speech match"
             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy"
             SpeechRecognizer.ERROR_SERVER -> "Server error"
-            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Listening"
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Speech timeout"
             SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission required"
             SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "Language not supported on this device"
             SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "Language unavailable on this device"
@@ -669,6 +675,7 @@ class MicCaptureManager(
         val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty().firstOrNull()
         if (!text.isNullOrBlank()) {
           val trimmed = text.trim()
+          _statusText.value = "Recognized"
           if (trimmed != flushedPartialTranscript) {
             queueRecognizedMessage(trimmed)
             sendQueuedIfIdle()
@@ -676,6 +683,8 @@ class MicCaptureManager(
             flushedPartialTranscript = null
             _liveTranscript.value = null
           }
+        } else {
+          _statusText.value = "No final result"
         }
         scheduleRestart()
       }
@@ -684,6 +693,7 @@ class MicCaptureManager(
         val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty().firstOrNull()
         if (!text.isNullOrBlank()) {
           val trimmed = text.trim()
+          _statusText.value = "Recognizing…"
           _liveTranscript.value = trimmed
           scheduleTranscriptFlush(trimmed)
         }
