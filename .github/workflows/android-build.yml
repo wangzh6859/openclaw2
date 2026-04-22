@@ -47,14 +47,14 @@ jobs:
 
     - name: Decode Keystore
       run: |
-        echo "${{ steps.keystore.outputs.keystore_b64 }}" | base64 -d > release.keystore
+        echo "${{ steps.keystore.outputs.keystore_b64 }}" | base64 -d > apps/android/release.keystore
 
     - name: Build with Gradle
       run: |
         cd apps/android
         chmod +x gradlew
         ./gradlew assemblePlayRelease assembleThirdPartyRelease \
-          -POPENCLAW_ANDROID_STORE_FILE=../../release.keystore \
+          -POPENCLAW_ANDROID_STORE_FILE=release.keystore \
           -POPENCLAW_ANDROID_STORE_PASSWORD=${{ steps.keystore.outputs.keystore_pass }} \
           -POPENCLAW_ANDROID_KEY_ALIAS=openclaw \
           -POPENCLAW_ANDROID_KEY_PASSWORD=${{ steps.keystore.outputs.keystore_pass }}
