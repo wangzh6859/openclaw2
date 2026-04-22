@@ -65,19 +65,49 @@ jobs:
       id: get_version
       run: |
         VERSION=$(grep "^[[:space:]]*versionName[[:space:]]*=" apps/android/app/build.gradle.kts | head -1 | sed 's/.*versionName[[:space:]]*=[[:space:]]*["]//;s/["].*//')
+        SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+        TAG_VERSION="${VERSION}-${SHORT_SHA}"
         echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "tag_version=$TAG_VERSION" >> $GITHUB_OUTPUT
+
+    - name: Generate Changelog
+      id: changelog
+      run: |
+        # 获取上一次提交的 hash
+        PREV_SHA=$(git rev-parse HEAD~1 2>/dev/null || echo "")
+        if [ -n "$PREV_SHA" ]; then
+          # 获取两次提交之间的变更
+          CHANGES=$(git log --pretty=format:"- %s" ${PREV_SHA}..HEAD 2>/dev/null | head -10)
+        else
+          CHANGES=$(git log --pretty=format:"- %s" -5 2>/dev/null)
+        fi
+        echo "changes<<EOF" >> $GITHUB_OUTPUT
+        echo "$CHANGES" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: v${{ steps.get_version.outputs.version }}
-        name: OpenClaw v${{ steps.get_version.outputs.version }}
+        tag_name: v${{ steps.get_version.outputs.tag_version }}
+        name: "OpenClaw v${{ steps.get_version.outputs.version }} (${{ github.sha }})"
         body: |
-          ### 自动化构建发布
-          - 软件名: openclaw
-          - 构建时间: ${{ github.event.head_commit.timestamp }}
-          - 提交哈希: ${{ github.sha }}
-          - 签名说明: 已使用永久固定签名加密，支持覆盖安装。
+          ## OpenClaw Android 构建版本
+          
+          ### 版本信息
+          - **软件名称**: openclaw
+          - **构建版本**: v${{ steps.get_version.outputs.version }}
+          - **提交哈希**: ${{ github.sha }}
+          - **构建时间**: ${{ github.event.head_commit.timestamp }}
+          
+          ### 本次更新
+          ${{ steps.changelog.outputs.changes }}
+          
+          ### 安装说明
+          - 首次安装：直接安装 APK
+          - 覆盖安装：支持签名一致的覆盖安装（已使用永久固定签名）
+          - 选择版本：
+            - `play` 版：适用于 Google Play 环境（无 SMS/通话权限）
+            - `thirdParty` 版：适用于第三方应用商店（含完整权限）
         files: |
           apps/android/app/build/outputs/apk/play/release/*.apk
           apps/android/app/build/outputs/apk/thirdParty/release/*.apk
