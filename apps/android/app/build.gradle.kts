@@ -93,8 +93,8 @@ android {
             if (hasAndroidReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isMinifyEnabled = false
+            isShrinkResources = false
             ndk {
                 debugSymbolLevel = "SYMBOL_TABLE"
             }
