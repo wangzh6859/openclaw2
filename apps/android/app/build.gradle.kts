@@ -93,10 +93,11 @@ android {
             if (hasAndroidReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            isMinifyEnabled = false
-            isShrinkResources = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             ndk {
                 debugSymbolLevel = "SYMBOL_TABLE"
+                abiFilters += listOf("armeabi-v7a", "arm64-v8a") // 只保留 ARM 架构，减小体积
             }
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
