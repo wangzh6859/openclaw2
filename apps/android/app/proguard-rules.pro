@@ -5,6 +5,12 @@
 -keep class org.slf4j.** { *; }
 -keep class org.slf4j.impl.** { *; }
 
+# Keep JNA classes (used by dnsjava)
+-dontwarn com.sun.jna.**
+-dontwarn javax.naming.**
+-keep class com.sun.jna.** { *; }
+-keep class javax.naming.** { *; }
+
 # Keep Kotlin serialization
 -keepattributes *Annotation*, InnerClasses
 -dontnote kotlinx.serialization.AnnotationsKt
