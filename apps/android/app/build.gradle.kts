@@ -288,3 +288,13 @@ androidComponents {
         }
     }
 }
+
+// Fix: make package tasks depend on the custom strip task to avoid implicit dependency issues
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        val variantName = variant.name
+        val variantNameCapitalized = variantName.replaceFirstChar(Char::titlecase)
+        val stripTaskName = "strip${variantNameCapitalized}DnsjavaServiceDescriptor"
+        tasks.named("package${variantNameCapitalized}Release").configure { it.dependsOn(stripTaskName) }
+    }
+}
