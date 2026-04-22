@@ -1,0 +1,83 @@
+name: Android Build & Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: gradle
+
+    - name: Grant execute permission for gradlew
+      run: chmod +x apps/android/gradlew
+
+    - name: Check/Generate Keystore
+      id: keystore
+      run: |
+        if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+          echo "No keystore found. Generating..."
+          KS_PASS=$(openssl rand -base64 12)
+          keytool -genkey -v -keystore openclaw.keystore -alias openclaw -keyalg RSA -keysize 2048 -validity 10000 -storepass "$KS_PASS" -keypass "$KS_PASS" -dname "CN=OpenClaw, OU=AI, O=OpenClaw, L=SH, S=SH, C=CN"
+          KS_B64=$(base64 -w 0 openclaw.keystore)
+          echo "$KS_B64" | gh secret set KEYSTORE_BASE64 -r wangzh6859/openclaw2
+          echo "$KS_PASS" | gh secret set KEYSTORE_PASSWORD -r wangzh6859/openclaw2
+          echo "$KS_PASS" | gh secret set KEY_PASSWORD -r wangzh6859/openclaw2
+          echo "openclaw" | gh secret set KEY_ALIAS -r wangzh6859/openclaw2
+          echo "keystore_b64=$KS_B64" >> $GITHUB_OUTPUT
+          echo "keystore_pass=$KS_PASS" >> $GITHUB_OUTPUT
+        else
+          echo "keystore_b64=${{ secrets.KEYSTORE_BASE64 }}" >> $GITHUB_OUTPUT
+          echo "keystore_pass=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Decode Keystore
+      run: |
+        echo "${{ steps.keystore.outputs.keystore_b64 }}" | base64 -d > apps/android/app/release.keystore
+
+    - name: Build with Gradle
+      run: |
+        cd apps/android
+        ./gradlew assemblePlayRelease assembleThirdPartyRelease \
+          -Pandroid.injected.signing.store.file=release.keystore \
+          -Pandroid.injected.signing.store.password=${{ steps.keystore.outputs.keystore_pass }} \
+          -Pandroid.injected.signing.key.alias=openclaw \
+          -Pandroid.injected.signing.key.password=${{ steps.keystore.outputs.keystore_pass }}
+
+    - name: Get Version
+      id: get_version
+      run: |
+        VERSION=$(grep "versionName" apps/android/app/build.gradle.kts | awk -F' = ' '{print $2}' | tr -d '"')
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "VERSION=$VERSION"
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v${{ steps.get_version.outputs.version }}
+        name: OpenClaw v${{ steps.get_version.outputs.version }}
+        body: |
+          ### 自动化构建发布
+          - 软件名: openclaw
+          - 构建时间: ${{ github.event.head_commit.timestamp }}
+          - 提交哈希: ${{ github.sha }}
+          - 签名说明: 已使用永久固定签名加密，支持覆盖安装。
+        files: |
+          apps/android/app/build/outputs/apk/play/release/*.apk
+          apps/android/app/build/outputs/apk/thirdParty/release/*.apk
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
