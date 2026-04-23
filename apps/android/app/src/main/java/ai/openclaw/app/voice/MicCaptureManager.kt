@@ -12,6 +12,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.core.content.ContextCompat
+import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -336,12 +337,15 @@ class MicCaptureManager(
 
   private fun startListeningSession() {
     val recognizerInstance = recognizer ?: return
+    val localeTag = Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
     val intent =
       Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeTag)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeTag)
         putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, speechMinSessionMs)
         putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, speechCompleteSilenceMs)
         putExtra(
@@ -601,7 +605,11 @@ class MicCaptureManager(
         _isListening.value = true
       }
 
-      override fun onBeginningOfSpeech() {}
+      override fun onBeginningOfSpeech() {
+        if (_micEnabled.value) {
+          _statusText.value = "Hearing voice"
+        }
+      }
 
       override fun onRmsChanged(rmsdB: Float) {
         val level = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
@@ -612,7 +620,9 @@ class MicCaptureManager(
 
       override fun onEndOfSpeech() {
         _inputLevel.value = 0f
-        scheduleRestart()
+        if (_micEnabled.value) {
+          _statusText.value = "Processing voice…"
+        }
       }
 
       override fun onError(error: Int) {
@@ -680,6 +690,9 @@ class MicCaptureManager(
         if (!text.isNullOrBlank()) {
           val trimmed = text.trim()
           _liveTranscript.value = trimmed
+          if (_micEnabled.value) {
+            _statusText.value = "Hearing voice"
+          }
           scheduleTranscriptFlush(trimmed)
         }
       }
