@@ -358,13 +358,22 @@ class MicCaptureManager(
 
     mainHandler.post {
       try {
-        if (recognizer == null) {
-          recognizer = SpeechRecognizer.createSpeechRecognizer(context).also { it.setRecognitionListener(listener) }
+        // Always recreate on mic start to avoid stale/busy recognizer instances
+        // left behind by previous app lifecycle or OEM speech service quirks.
+        try {
+          recognizer?.cancel()
+        } catch (_: Throwable) {
         }
+        try {
+          recognizer?.destroy()
+        } catch (_: Throwable) {
+        }
+        recognizer = SpeechRecognizer.createSpeechRecognizer(context).also { it.setRecognitionListener(listener) }
         startListeningSession()
       } catch (err: Throwable) {
         _statusText.value = "Start failed: ${err.message ?: err::class.simpleName}"
         _micEnabled.value = false
+        refreshDiagnostics("start-failed")
       }
     }
   }
