@@ -34,6 +34,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
@@ -58,6 +63,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -237,22 +243,18 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
           )
         }
 
-        // Ring size = 68dp base + up to 22dp driven by mic input level.
-        // The outer Box is fixed at 90dp (max ring size) so the ring never shifts the button.
+        // Dynamic pulse ring + mic button.
+        // Pulses respond to both live input level and a breathing beat, so users can tell
+        // the mic is alive even when level callbacks are sparse on some devices.
         Box(
           modifier = Modifier.padding(horizontal = 16.dp).size(90.dp),
           contentAlignment = Alignment.Center,
         ) {
-          if (micEnabled) {
-            val ringLevel = micInputLevel.coerceIn(0f, 1f)
-            val ringSize = 68.dp + (22.dp * max(ringLevel, 0.05f))
-            Box(
-              modifier =
-                Modifier
-                  .size(ringSize)
-                  .background(mobileAccent.copy(alpha = 0.12f + 0.14f * ringLevel), CircleShape),
-            )
-          }
+          VoiceMicPulse(
+            modifier = Modifier.fillMaxSize(),
+            isActive = micEnabled,
+            level = micInputLevel,
+          )
           Button(
             onClick = {
               if (micCooldown) return@Button
@@ -282,7 +284,14 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
             Icon(
               imageVector = if (micEnabled) Icons.Default.MicOff else Icons.Default.Mic,
               contentDescription = if (micEnabled) "Turn microphone off" else "Turn microphone on",
-              modifier = Modifier.size(24.dp),
+              modifier =
+                Modifier
+                  .size(24.dp)
+                  .graphicsLayer {
+                    val bump = if (micEnabled) (1f + micInputLevel.coerceIn(0f, 1f) * 0.18f) else 1f
+                    scaleX = bump
+                    scaleY = bump
+                  },
             )
           }
         }
@@ -302,11 +311,14 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
           queueCount > 0 -> "$queueCount queued"
           micIsSending -> "Sending"
           micCooldown -> "Cooldown"
+          micEnabled && micInputLevel > 0.18f -> "Hearing voice"
+          micEnabled && micStatusText.isNotBlank() && micStatusText != "Listening" -> micStatusText
           micEnabled -> "Listening"
           else -> "Mic off"
         }
       val stateColor =
         when {
+          micEnabled && micInputLevel > 0.18f -> mobileAccent
           micEnabled -> mobileSuccess
           micIsSending -> mobileAccent
           else -> mobileTextSecondary
@@ -381,6 +393,43 @@ private fun VoiceTurnBubble(entry: VoiceConversationEntry) {
           color = mobileText,
         )
       }
+    }
+  }
+}
+
+@Composable
+private fun VoiceMicPulse(
+  modifier: Modifier = Modifier,
+  isActive: Boolean,
+  level: Float,
+) {
+  val pulse = rememberInfiniteTransition(label = "voiceMicPulse")
+  val beat by
+    pulse.animateFloat(
+      initialValue = 0f,
+      targetValue = 1f,
+      animationSpec = infiniteRepeatable(animation = tween(durationMillis = 900), repeatMode = RepeatMode.Restart),
+      label = "voiceMicPulseBeat",
+    )
+
+  val clampedLevel = level.coerceIn(0f, 1f)
+  val visualLevel = if (isActive) max(clampedLevel, 0.06f) else 0f
+
+  Box(modifier = modifier, contentAlignment = Alignment.Center) {
+    repeat(3) { index ->
+      val phase = (beat + index * 0.24f) % 1f
+      val scale = if (isActive) 0.72f + phase * (0.78f + visualLevel * 0.46f) else 0.74f
+      val alpha = if (isActive) (1f - phase) * (0.10f + visualLevel * 0.30f) else 0f
+      Box(
+        modifier =
+          Modifier
+            .size(70.dp)
+            .graphicsLayer {
+              scaleX = scale
+              scaleY = scale
+            }
+            .background(mobileAccent.copy(alpha = alpha.coerceIn(0f, 0.42f)), CircleShape),
+      )
     }
   }
 }
