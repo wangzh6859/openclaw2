@@ -316,7 +316,7 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
           micIsSending -> "Sending"
           micCooldown -> "Cooldown"
           micEnabled && micSpeechDetected -> "Hearing voice"
-          micEnabled && micStatusText.isNotBlank() && micStatusText != "Listening" -> micStatusText
+          micEnabled && micStatusText.isNotBlank() -> micStatusText
           micEnabled -> "Listening"
           else -> "Mic off"
         }

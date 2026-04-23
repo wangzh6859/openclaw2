@@ -421,6 +421,10 @@ class MicCaptureManager(
         else -> "Listening"
       }
     _isListening.value = true
+    try {
+      recognizerInstance.cancel()
+    } catch (_: Throwable) {
+    }
     recognizerInstance.startListening(intent)
   }
 
@@ -497,11 +501,10 @@ class MicCaptureManager(
   private fun sendQueuedIfIdle() {
     if (_isSending.value) return
     if (!hasQueuedMessages()) {
-      if (_micEnabled.value) {
-        _statusText.value = "Listening"
-      } else {
+      if (!_micEnabled.value) {
         _statusText.value = "Mic off"
       }
+      // Keep current diagnostic/listening/error status while mic is enabled.
       return
     }
     if (!gatewayConnected) {
@@ -765,11 +768,12 @@ class MicCaptureManager(
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
             -> 1_200L
             SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> 2_500L
-            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> (1200L + recognizerBusyStreak * 800L).coerceAtMost(8_000L)
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> (1500L + recognizerBusyStreak * 1200L).coerceAtMost(10_000L)
             else -> 600L
           }
 
         if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
+          _statusText.value = "Recognizer busy, retrying…"
           recreateRecognizer("busy")
         }
 
