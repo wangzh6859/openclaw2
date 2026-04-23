@@ -12,7 +12,6 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.core.content.ContextCompat
-import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,10 +51,9 @@ class MicCaptureManager(
 ) {
   companion object {
     private const val tag = "MicCapture"
-    // Keep sessions short so devices that delay final results still flush quickly.
-    private const val speechMinSessionMs = 3_000L
-    private const val speechCompleteSilenceMs = 1_200L
-    private const val speechPossibleSilenceMs = 700L
+    private const val speechMinSessionMs = 30_000L
+    private const val speechCompleteSilenceMs = 1_500L
+    private const val speechPossibleSilenceMs = 900L
     private const val transcriptIdleFlushMs = 1_600L
     private const val maxConversationEntries = 40
     private const val pendingRunTimeoutMs = 45_000L
@@ -341,9 +339,6 @@ class MicCaptureManager(
     val intent =
       Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        val languageTag = Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, languageTag)
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
@@ -361,13 +356,7 @@ class MicCaptureManager(
         else -> "Listening"
       }
     _isListening.value = true
-    try {
-      recognizerInstance.startListening(intent)
-    } catch (err: Throwable) {
-      _isListening.value = false
-      _statusText.value = "Recognizer start failed: ${err.message ?: err::class.simpleName}"
-      scheduleRestart(delayMs = 1200L)
-    }
+    recognizerInstance.startListening(intent)
   }
 
   private fun scheduleRestart(delayMs: Long = 300L) {
@@ -636,10 +625,10 @@ class MicCaptureManager(
             SpeechRecognizer.ERROR_CLIENT -> "Client error"
             SpeechRecognizer.ERROR_NETWORK -> "Network error"
             SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
-            SpeechRecognizer.ERROR_NO_MATCH -> "No speech match"
+            SpeechRecognizer.ERROR_NO_MATCH -> "Listening"
             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy"
             SpeechRecognizer.ERROR_SERVER -> "Server error"
-            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Speech timeout"
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Listening"
             SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission required"
             SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "Language not supported on this device"
             SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "Language unavailable on this device"
@@ -675,7 +664,6 @@ class MicCaptureManager(
         val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty().firstOrNull()
         if (!text.isNullOrBlank()) {
           val trimmed = text.trim()
-          _statusText.value = "Recognized"
           if (trimmed != flushedPartialTranscript) {
             queueRecognizedMessage(trimmed)
             sendQueuedIfIdle()
@@ -683,8 +671,6 @@ class MicCaptureManager(
             flushedPartialTranscript = null
             _liveTranscript.value = null
           }
-        } else {
-          _statusText.value = "No final result"
         }
         scheduleRestart()
       }
@@ -693,7 +679,6 @@ class MicCaptureManager(
         val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty().firstOrNull()
         if (!text.isNullOrBlank()) {
           val trimmed = text.trim()
-          _statusText.value = "Recognizing…"
           _liveTranscript.value = trimmed
           scheduleTranscriptFlush(trimmed)
         }

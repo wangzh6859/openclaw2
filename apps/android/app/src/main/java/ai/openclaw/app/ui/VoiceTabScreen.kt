@@ -324,23 +324,6 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
         )
       }
 
-      // Voice 诊断状态：便于定位“有权限但不上屏/无回复”的卡点
-      if (micStatusText.isNotBlank()) {
-        Surface(
-          modifier = Modifier.fillMaxWidth(),
-          shape = RoundedCornerShape(12.dp),
-          color = mobileSurface,
-          border = BorderStroke(1.dp, mobileBorder),
-        ) {
-          Text(
-            "Voice状态：${micStatusText.trim()}",
-            style = mobileCaption1,
-            color = mobileTextSecondary,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-          )
-        }
-      }
-
       if (!hasMicPermission) {
         val showRationale =
           if (activity == null) {
