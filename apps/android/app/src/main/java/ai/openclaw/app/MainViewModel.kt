@@ -111,6 +111,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
   val micConversation: StateFlow<List<VoiceConversationEntry>> = runtimeState(initial = emptyList()) { it.micConversation }
   val micInputLevel: StateFlow<Float> = runtimeState(initial = 0f) { it.micInputLevel }
   val micIsSending: StateFlow<Boolean> = runtimeState(initial = false) { it.micIsSending }
+  val micSpeechDetected: StateFlow<Boolean> = runtimeState(initial = false) { it.micSpeechDetected }
+  val micDiagnosticsText: StateFlow<String> = runtimeState(initial = "diag: idle") { it.micDiagnosticsText }
 
   val chatSessionKey: StateFlow<String> = runtimeState(initial = "main") { it.chatSessionKey }
   val chatSessionId: StateFlow<String?> = runtimeState(initial = null) { it.chatSessionId }

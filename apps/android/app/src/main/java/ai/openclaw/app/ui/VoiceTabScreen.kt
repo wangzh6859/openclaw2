@@ -96,6 +96,10 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
   val micConversation by viewModel.micConversation.collectAsState()
   val micInputLevel by viewModel.micInputLevel.collectAsState()
   val micIsSending by viewModel.micIsSending.collectAsState()
+  val micSpeechDetected by viewModel.micSpeechDetected.collectAsState()
+  val micDiagnosticsText by viewModel.micDiagnosticsText.collectAsState()
+
+  var showVoiceDiagnostics by remember { mutableStateOf(false) }
 
   val hasStreamingAssistant = micConversation.any { it.role == VoiceConversationRole.Assistant && it.isStreaming }
   val showThinkingBubble = micIsSending && !hasStreamingAssistant
@@ -252,7 +256,7 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
         ) {
           VoiceMicPulse(
             modifier = Modifier.fillMaxSize(),
-            isActive = micEnabled && micInputLevel > 0.08f,
+            isActive = micEnabled && micSpeechDetected,
             level = micInputLevel,
           )
           Button(
@@ -288,7 +292,7 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
                 Modifier
                   .size(24.dp)
                   .graphicsLayer {
-                    val bump = if (micEnabled && micInputLevel > 0.08f) (1f + micInputLevel.coerceIn(0f, 1f) * 0.18f) else 1f
+                    val bump = if (micEnabled && micSpeechDetected) (1f + micInputLevel.coerceIn(0f, 1f) * 0.18f) else 1f
                     scaleX = bump
                     scaleY = bump
                   },
@@ -311,14 +315,14 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
           queueCount > 0 -> "$queueCount queued"
           micIsSending -> "Sending"
           micCooldown -> "Cooldown"
-          micEnabled && micInputLevel > 0.08f -> "Hearing voice"
+          micEnabled && micSpeechDetected -> "Hearing voice"
           micEnabled && micStatusText.isNotBlank() && micStatusText != "Listening" -> micStatusText
           micEnabled -> "Listening"
           else -> "Mic off"
         }
       val stateColor =
         when {
-          micEnabled && micInputLevel > 0.08f -> mobileAccent
+          micEnabled && micSpeechDetected -> mobileAccent
           micEnabled -> mobileSuccess
           micIsSending -> mobileAccent
           else -> mobileTextSecondary
@@ -334,6 +338,30 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
           color = stateColor,
           modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
         )
+      }
+
+      Button(
+        onClick = { showVoiceDiagnostics = !showVoiceDiagnostics },
+        shape = RoundedCornerShape(10.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = mobileSurface, contentColor = mobileTextSecondary),
+      ) {
+        Text(if (showVoiceDiagnostics) "Hide voice diagnostics" else "Show voice diagnostics", style = mobileCaption1)
+      }
+
+      if (showVoiceDiagnostics) {
+        Surface(
+          modifier = Modifier.fillMaxWidth(),
+          shape = RoundedCornerShape(12.dp),
+          color = mobileCardSurface,
+          border = BorderStroke(1.dp, mobileBorderStrong),
+        ) {
+          Text(
+            micDiagnosticsText,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            style = mobileCaption1,
+            color = mobileTextSecondary,
+          )
+        }
       }
 
       if (!hasMicPermission) {

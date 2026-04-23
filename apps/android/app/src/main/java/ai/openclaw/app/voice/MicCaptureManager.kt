@@ -90,6 +90,12 @@ class MicCaptureManager(
   private val _isSending = MutableStateFlow(false)
   val isSending: StateFlow<Boolean> = _isSending
 
+  private val _speechDetected = MutableStateFlow(false)
+  val speechDetected: StateFlow<Boolean> = _speechDetected
+
+  private val _diagnosticsText = MutableStateFlow("diag: idle")
+  val diagnosticsText: StateFlow<String> = _diagnosticsText
+
   private val messageQueue = ArrayDeque<String>()
   private val messageQueueLock = Any()
   private var flushedPartialTranscript: String? = null
@@ -103,9 +109,49 @@ class MicCaptureManager(
   private var transcriptFlushJob: Job? = null
   private var pendingRunTimeoutJob: Job? = null
   private var stopRequested = false
+  private var speechDecayJob: Job? = null
   private val ttsPauseLock = Any()
   private var ttsPauseDepth = 0
   private var resumeMicAfterTts = false
+
+  private var diagReadyCount = 0
+  private var diagBeginCount = 0
+  private var diagPartialCount = 0
+  private var diagFinalCount = 0
+  private var diagErrorCount = 0
+  private var diagRestartCount = 0
+  private var diagLastError = "none"
+  private var diagLastEvent = "idle"
+
+  private fun refreshDiagnostics(event: String) {
+    diagLastEvent = event
+    val partialLen = _liveTranscript.value?.length ?: 0
+    val queueSize = queuedMessageCount()
+    _diagnosticsText.value =
+      "event=$diagLastEvent | speech=${_speechDetected.value} | level=${"%.2f".format(_inputLevel.value)}\n" +
+        "ready=$diagReadyCount begin=$diagBeginCount partial=$diagPartialCount final=$diagFinalCount error=$diagErrorCount restart=$diagRestartCount\n" +
+        "listening=${_isListening.value} sending=${_isSending.value} queued=$queueSize partialLen=$partialLen\n" +
+        "status=${_statusText.value} | lastError=$diagLastError"
+  }
+
+  private fun markSpeechDetected(source: String) {
+    _speechDetected.value = true
+    speechDecayJob?.cancel()
+    speechDecayJob =
+      scope.launch {
+        delay(1100L)
+        _speechDetected.value = false
+        refreshDiagnostics("speech-decay:$source")
+      }
+    refreshDiagnostics(source)
+  }
+
+  private fun clearSpeechDetected(source: String) {
+    speechDecayJob?.cancel()
+    speechDecayJob = null
+    _speechDetected.value = false
+    refreshDiagnostics(source)
+  }
 
   private fun enqueueMessage(message: String) {
     synchronized(messageQueueLock) {
@@ -145,6 +191,7 @@ class MicCaptureManager(
 
   fun setMicEnabled(enabled: Boolean) {
     if (_micEnabled.value == enabled) return
+    refreshDiagnostics(if (enabled) "mic-on" else "mic-off")
     _micEnabled.value = enabled
     if (enabled) {
       val pausedForTts =
@@ -295,6 +342,7 @@ class MicCaptureManager(
 
   private fun start() {
     stopRequested = false
+    refreshDiagnostics("start")
     if (!SpeechRecognizer.isRecognitionAvailable(context)) {
       _statusText.value = "Speech recognizer unavailable"
       _micEnabled.value = false
@@ -321,6 +369,7 @@ class MicCaptureManager(
 
   private fun stop() {
     stopRequested = true
+    clearSpeechDetected("stop")
     restartJob?.cancel()
     restartJob = null
     transcriptFlushJob?.cancel()
@@ -337,6 +386,7 @@ class MicCaptureManager(
 
   private fun startListeningSession() {
     val recognizerInstance = recognizer ?: return
+    refreshDiagnostics("start-listening")
     val localeTag = Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
     val intent =
       Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -373,6 +423,8 @@ class MicCaptureManager(
         mainHandler.post {
           if (stopRequested || !_micEnabled.value) return@post
           try {
+            diagRestartCount += 1
+            refreshDiagnostics("restart:$delayMs")
             startListeningSession()
           } catch (_: Throwable) {
             // retry through onError
@@ -603,17 +655,26 @@ class MicCaptureManager(
     object : RecognitionListener {
       override fun onReadyForSpeech(params: Bundle?) {
         _isListening.value = true
+        diagReadyCount += 1
+        refreshDiagnostics("ready")
       }
 
       override fun onBeginningOfSpeech() {
+        diagBeginCount += 1
         if (_micEnabled.value) {
           _statusText.value = "Hearing voice"
+          markSpeechDetected("begin-speech")
+        } else {
+          refreshDiagnostics("begin-speech-while-disabled")
         }
       }
 
       override fun onRmsChanged(rmsdB: Float) {
         val level = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
         _inputLevel.value = level
+        if (_micEnabled.value && level > 0.08f) {
+          markSpeechDetected("rms")
+        }
       }
 
       override fun onBufferReceived(buffer: ByteArray?) {}
@@ -622,6 +683,7 @@ class MicCaptureManager(
         _inputLevel.value = 0f
         if (_micEnabled.value) {
           _statusText.value = "Processing voice…"
+          refreshDiagnostics("end-speech")
         }
       }
 
@@ -647,6 +709,7 @@ class MicCaptureManager(
             else -> "Speech error ($error)"
           }
         _statusText.value = status
+        clearSpeechDetected("error")
 
         if (
           error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ||
@@ -656,6 +719,10 @@ class MicCaptureManager(
           disableMic(status)
           return
         }
+
+        diagErrorCount += 1
+        diagLastError = "code=$error:$status"
+        refreshDiagnostics("error")
 
         val restartDelayMs =
           when (error) {
@@ -677,11 +744,17 @@ class MicCaptureManager(
           if (trimmed != flushedPartialTranscript) {
             queueRecognizedMessage(trimmed)
             sendQueuedIfIdle()
+            diagFinalCount += 1
+            refreshDiagnostics("final")
           } else {
             flushedPartialTranscript = null
             _liveTranscript.value = null
+            refreshDiagnostics("final-duplicate")
           }
+        } else {
+          refreshDiagnostics("final-empty")
         }
+        clearSpeechDetected("final-done")
         scheduleRestart()
       }
 
@@ -690,10 +763,16 @@ class MicCaptureManager(
         if (!text.isNullOrBlank()) {
           val trimmed = text.trim()
           _liveTranscript.value = trimmed
+          diagPartialCount += 1
           if (_micEnabled.value) {
             _statusText.value = "Hearing voice"
+            markSpeechDetected("partial")
+          } else {
+            refreshDiagnostics("partial-while-disabled")
           }
           scheduleTranscriptFlush(trimmed)
+        } else {
+          refreshDiagnostics("partial-empty")
         }
       }
 

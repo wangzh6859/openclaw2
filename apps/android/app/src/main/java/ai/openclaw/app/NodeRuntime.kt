@@ -416,6 +416,12 @@ class NodeRuntime(
   val micIsSending: StateFlow<Boolean>
     get() = micCapture.isSending
 
+  val micSpeechDetected: StateFlow<Boolean>
+    get() = micCapture.speechDetected
+
+  val micDiagnosticsText: StateFlow<String>
+    get() = micCapture.diagnosticsText
+
   private val talkMode: TalkModeManager by lazy {
     TalkModeManager(
       context = appContext,
