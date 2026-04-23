@@ -122,6 +122,7 @@ class MicCaptureManager(
   private var diagRestartCount = 0
   private var diagLastError = "none"
   private var diagLastEvent = "idle"
+  private var recognizerBusyStreak = 0
 
   private fun refreshDiagnostics(event: String) {
     diagLastEvent = event
@@ -129,7 +130,7 @@ class MicCaptureManager(
     val queueSize = queuedMessageCount()
     _diagnosticsText.value =
       "event=$diagLastEvent | speech=${_speechDetected.value} | level=${"%.2f".format(_inputLevel.value)}\n" +
-        "ready=$diagReadyCount begin=$diagBeginCount partial=$diagPartialCount final=$diagFinalCount error=$diagErrorCount restart=$diagRestartCount\n" +
+        "ready=$diagReadyCount begin=$diagBeginCount partial=$diagPartialCount final=$diagFinalCount error=$diagErrorCount restart=$diagRestartCount busyStreak=$recognizerBusyStreak\n" +
         "listening=${_isListening.value} sending=${_isSending.value} queued=$queueSize partialLen=$partialLen\n" +
         "status=${_statusText.value} | lastError=$diagLastError"
   }
@@ -342,6 +343,7 @@ class MicCaptureManager(
 
   private fun start() {
     stopRequested = false
+    recognizerBusyStreak = 0
     refreshDiagnostics("start")
     if (!SpeechRecognizer.isRecognitionAvailable(context)) {
       _statusText.value = "Speech recognizer unavailable"
@@ -411,6 +413,26 @@ class MicCaptureManager(
       }
     _isListening.value = true
     recognizerInstance.startListening(intent)
+  }
+
+  private fun recreateRecognizer(reason: String) {
+    mainHandler.post {
+      if (stopRequested || !_micEnabled.value) return@post
+      try {
+        recognizer?.cancel()
+      } catch (_: Throwable) {
+      }
+      try {
+        recognizer?.destroy()
+      } catch (_: Throwable) {
+      }
+      recognizer = null
+      try {
+        recognizer = SpeechRecognizer.createSpeechRecognizer(context).also { it.setRecognitionListener(listener) }
+      } catch (_: Throwable) {
+      }
+      refreshDiagnostics("recreate:$reason")
+    }
   }
 
   private fun scheduleRestart(delayMs: Long = 300L) {
@@ -655,6 +677,7 @@ class MicCaptureManager(
     object : RecognitionListener {
       override fun onReadyForSpeech(params: Bundle?) {
         _isListening.value = true
+        recognizerBusyStreak = 0
         diagReadyCount += 1
         refreshDiagnostics("ready")
       }
@@ -698,7 +721,10 @@ class MicCaptureManager(
             SpeechRecognizer.ERROR_NETWORK -> "Network error"
             SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
             SpeechRecognizer.ERROR_NO_MATCH -> "Listening"
-            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy"
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> {
+              recognizerBusyStreak += 1
+              "Recognizer busy (#$recognizerBusyStreak)"
+            }
             SpeechRecognizer.ERROR_SERVER -> "Server error"
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Listening"
             SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission required"
@@ -730,8 +756,14 @@ class MicCaptureManager(
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
             -> 1_200L
             SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> 2_500L
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> (1200L + recognizerBusyStreak * 800L).coerceAtMost(8_000L)
             else -> 600L
           }
+
+        if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
+          recreateRecognizer("busy")
+        }
+
         scheduleRestart(delayMs = restartDelayMs)
       }
 
