@@ -467,6 +467,59 @@ class MicCaptureManager(
       }
   }
 
+  private fun startFallbackVoiceCapture() {
+    if (fallbackActive) return
+    fallbackActive = true
+    fallbackAudioFrames.clear()
+    fallbackSilenceCounter = 0
+    _statusText.value = "Listening (backup mode)"
+    _isListening.value = true
+    diagReadyCount += 1
+    refreshDiagnostics("fallback-start")
+
+    voiceInputCapture =
+      VoiceInputCapture(
+        context = context,
+        scope = scope,
+        onAudioFrame = { frame ->
+          fallbackAudioFrames.add(frame.copyOf())
+          if (fallbackAudioFrames.size > 16_000) {
+            fallbackAudioFrames.removeAt(0)
+          }
+        },
+        onLevelChanged = { level ->
+          _inputLevel.value = level
+          if (level > 0.08f) {
+            fallbackSilenceCounter = 0
+            markSpeechDetected("fallback-audio")
+          } else {
+            fallbackSilenceCounter += 1
+          }
+        },
+      )
+    voiceInputCapture?.startCapture()
+  }
+
+  private fun stopFallbackVoiceCapture() {
+    if (!fallbackActive) return
+    fallbackActive = false
+    voiceInputCapture?.stopCapture()
+    voiceInputCapture = null
+    _inputLevel.value = 0f
+
+    if (fallbackAudioFrames.isNotEmpty()) {
+      val durationMs = (fallbackAudioFrames.size * 10).toLong()
+      val transcript = "[Audio: ${durationMs}ms captured]"
+      queueRecognizedMessage(transcript)
+      sendQueuedIfIdle()
+      diagFinalCount += 1
+      refreshDiagnostics("fallback-done")
+    }
+    fallbackAudioFrames.clear()
+    fallbackSilenceCounter = 0
+    clearSpeechDetected("fallback-stop")
+  }
+
   private fun queueRecognizedMessage(text: String) {
     val message = text.trim()
     _liveTranscript.value = null
@@ -851,56 +904,3 @@ private fun kotlinx.serialization.json.JsonElement?.asObjectOrNull(): JsonObject
 
 private fun kotlinx.serialization.json.JsonElement?.asStringOrNull(): String? =
   (this as? JsonPrimitive)?.takeIf { it.isString }?.content
-
-  private fun startFallbackVoiceCapture() {
-    if (fallbackActive) return
-    fallbackActive = true
-    fallbackAudioFrames.clear()
-    fallbackSilenceCounter = 0
-    _statusText.value = "Listening (backup mode)"
-    _isListening.value = true
-    diagReadyCount += 1
-    refreshDiagnostics("fallback-start")
-
-    voiceInputCapture =
-      VoiceInputCapture(
-        context = context,
-        scope = scope,
-        onAudioFrame = { frame ->
-          fallbackAudioFrames.add(frame.copyOf())
-          if (fallbackAudioFrames.size > 16_000) {
-            fallbackAudioFrames.removeAt(0)
-          }
-        },
-        onLevelChanged = { level ->
-          _inputLevel.value = level
-          if (level > 0.08f) {
-            fallbackSilenceCounter = 0
-            markSpeechDetected("fallback-audio")
-          } else {
-            fallbackSilenceCounter += 1
-          }
-        },
-      )
-    voiceInputCapture?.startCapture()
-  }
-
-  private fun stopFallbackVoiceCapture() {
-    if (!fallbackActive) return
-    fallbackActive = false
-    voiceInputCapture?.stopCapture()
-    voiceInputCapture = null
-    _inputLevel.value = 0f
-
-    if (fallbackAudioFrames.isNotEmpty()) {
-      val durationMs = (fallbackAudioFrames.size * 10).toLong()
-      val transcript = "[Audio: ${durationMs}ms captured]"
-      queueRecognizedMessage(transcript)
-      sendQueuedIfIdle()
-      diagFinalCount += 1
-      refreshDiagnostics("fallback-done")
-    }
-    fallbackAudioFrames.clear()
-    fallbackSilenceCounter = 0
-    clearSpeechDetected("fallback-stop")
-  }
