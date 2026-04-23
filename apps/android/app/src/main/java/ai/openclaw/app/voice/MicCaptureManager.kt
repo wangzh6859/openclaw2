@@ -109,6 +109,7 @@ class MicCaptureManager(
   private var fallbackAudioFrames = mutableListOf<FloatArray>()
   private var fallbackSilenceCounter = 0
   private val fallbackSilenceDuration = 1200
+  private var restartJob: Job? = null
   private var drainJob: Job? = null
   private var transcriptFlushJob: Job? = null
   private var pendingRunTimeoutJob: Job? = null

@@ -85,7 +85,7 @@ class VoiceInputCapture(
             }
 
             val rms = sqrt(sumSq / numRead)
-            val levelDb = 20f * kotlin.math.log10((rms + 1e-6f).coerceAtLeast(1e-6f))
+            val levelDb = (20.0 * kotlin.math.log10((rms + 1e-6).coerceAtLeast(1e-6))).toFloat()
             val normalizedLevel = ((levelDb - silenceThresholdDb) / (-silenceThresholdDb)).coerceIn(0f, 1f)
             onLevelChanged(normalizedLevel)
 
