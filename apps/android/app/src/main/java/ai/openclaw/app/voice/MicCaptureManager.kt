@@ -123,6 +123,7 @@ class MicCaptureManager(
   private var diagLastError = "none"
   private var diagLastEvent = "idle"
   private var recognizerBusyStreak = 0
+  private var recognizerClientStreak = 0
 
   private fun refreshDiagnostics(event: String) {
     diagLastEvent = event
@@ -130,7 +131,7 @@ class MicCaptureManager(
     val queueSize = queuedMessageCount()
     _diagnosticsText.value =
       "event=$diagLastEvent | speech=${_speechDetected.value} | level=${"%.2f".format(_inputLevel.value)}\n" +
-        "ready=$diagReadyCount begin=$diagBeginCount partial=$diagPartialCount final=$diagFinalCount error=$diagErrorCount restart=$diagRestartCount busyStreak=$recognizerBusyStreak\n" +
+        "ready=$diagReadyCount begin=$diagBeginCount partial=$diagPartialCount final=$diagFinalCount error=$diagErrorCount restart=$diagRestartCount busyStreak=$recognizerBusyStreak clientStreak=$recognizerClientStreak\n" +
         "listening=${_isListening.value} sending=${_isSending.value} queued=$queueSize partialLen=$partialLen\n" +
         "status=${_statusText.value} | lastError=$diagLastError"
   }
@@ -414,17 +415,8 @@ class MicCaptureManager(
           speechPossibleSilenceMs,
         )
       }
-    _statusText.value =
-      when {
-        _isSending.value -> "Listening · sending queued voice"
-        hasQueuedMessages() -> "Listening · ${queuedMessageCount()} queued"
-        else -> "Listening"
-      }
-    _isListening.value = true
-    try {
-      recognizerInstance.cancel()
-    } catch (_: Throwable) {
-    }
+    _statusText.value = "Starting recognizer…"
+    _isListening.value = false
     recognizerInstance.startListening(intent)
   }
 
@@ -690,6 +682,13 @@ class MicCaptureManager(
       override fun onReadyForSpeech(params: Bundle?) {
         _isListening.value = true
         recognizerBusyStreak = 0
+        recognizerClientStreak = 0
+        _statusText.value =
+          when {
+            _isSending.value -> "Listening · sending queued voice"
+            hasQueuedMessages() -> "Listening · ${queuedMessageCount()} queued"
+            else -> "Listening"
+          }
         diagReadyCount += 1
         refreshDiagnostics("ready")
       }
@@ -729,7 +728,10 @@ class MicCaptureManager(
         val status =
           when (error) {
             SpeechRecognizer.ERROR_AUDIO -> "Audio error"
-            SpeechRecognizer.ERROR_CLIENT -> "Client error"
+            SpeechRecognizer.ERROR_CLIENT -> {
+              recognizerClientStreak += 1
+              "Client error (#$recognizerClientStreak)"
+            }
             SpeechRecognizer.ERROR_NETWORK -> "Network error"
             SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
             SpeechRecognizer.ERROR_NO_MATCH -> "Listening"
@@ -769,12 +771,17 @@ class MicCaptureManager(
             -> 1_200L
             SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> 2_500L
             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> (1500L + recognizerBusyStreak * 1200L).coerceAtMost(10_000L)
+            SpeechRecognizer.ERROR_CLIENT -> (1800L + recognizerClientStreak * 1200L).coerceAtMost(10_000L)
             else -> 600L
           }
 
         if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
           _statusText.value = "Recognizer busy, retrying…"
           recreateRecognizer("busy")
+        }
+        if (error == SpeechRecognizer.ERROR_CLIENT) {
+          _statusText.value = "Recognizer client error, recovering…"
+          recreateRecognizer("client")
         }
 
         scheduleRestart(delayMs = restartDelayMs)
