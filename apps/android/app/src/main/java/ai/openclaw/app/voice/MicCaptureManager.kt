@@ -235,6 +235,14 @@ class MicCaptureManager(
     }
   }
 
+  fun submitManualTranscript(text: String) {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return
+    queueRecognizedMessage(trimmed)
+    sendQueuedIfIdle()
+    refreshDiagnostics("manual-submit")
+  }
+
   suspend fun pauseForTts() {
     val shouldPause =
       synchronized(ttsPauseLock) {

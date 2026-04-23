@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -77,6 +78,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import ai.openclaw.app.MainViewModel
 import ai.openclaw.app.voice.VoiceConversationEntry
 import ai.openclaw.app.voice.VoiceConversationRole
+import java.util.Locale
 import kotlin.math.max
 
 @Composable
@@ -100,6 +102,7 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
   val micDiagnosticsText by viewModel.micDiagnosticsText.collectAsState()
 
   var showVoiceDiagnostics by remember { mutableStateOf(false) }
+  var speechDialogActive by remember { mutableStateOf(false) }
 
   val hasStreamingAssistant = micConversation.any { it.role == VoiceConversationRole.Assistant && it.isStreaming }
   val showThinkingBubble = micIsSending && !hasStreamingAssistant
@@ -122,11 +125,32 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
     }
   }
 
+  val speechLauncher =
+    rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+      speechDialogActive = false
+      val items = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS).orEmpty()
+      val text = items.firstOrNull()?.trim().orEmpty()
+      if (result.resultCode == Activity.RESULT_OK && text.isNotEmpty()) {
+        viewModel.submitVoiceTranscript(text)
+      }
+    }
+
   val requestMicPermission =
     rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
       hasMicPermission = granted
       if (granted && pendingMicEnable) {
-        viewModel.setMicEnabled(true)
+        val localeTag = Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
+        val intent =
+          Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "请说话…")
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeTag)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeTag)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+          }
+        speechDialogActive = true
+        speechLauncher.launch(intent)
       }
       pendingMicEnable = false
     }
@@ -256,18 +280,26 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
         ) {
           VoiceMicPulse(
             modifier = Modifier.fillMaxSize(),
-            isActive = micEnabled && micSpeechDetected,
+            isActive = speechDialogActive || (micEnabled && micSpeechDetected),
             level = micInputLevel,
           )
           Button(
             onClick = {
-              if (micCooldown) return@Button
-              if (micEnabled) {
-                viewModel.setMicEnabled(false)
-                return@Button
-              }
+              if (micCooldown || speechDialogActive) return@Button
+              viewModel.setMicEnabled(false)
               if (hasMicPermission) {
-                viewModel.setMicEnabled(true)
+                val localeTag = Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
+                val intent =
+                  Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_PROMPT, "请说话…")
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeTag)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeTag)
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+                  }
+                speechDialogActive = true
+                speechLauncher.launch(intent)
               } else {
                 pendingMicEnable = true
                 requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
@@ -279,20 +311,20 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
             modifier = Modifier.size(60.dp),
             colors =
               ButtonDefaults.buttonColors(
-                containerColor = if (micCooldown) mobileTextSecondary else if (micEnabled) mobileDanger else mobileAccent,
+                containerColor = if (micCooldown) mobileTextSecondary else if (speechDialogActive) mobileDanger else mobileAccent,
                 contentColor = Color.White,
                 disabledContainerColor = mobileTextSecondary,
                 disabledContentColor = Color.White.copy(alpha = 0.5f),
               ),
           ) {
             Icon(
-              imageVector = if (micEnabled) Icons.Default.MicOff else Icons.Default.Mic,
-              contentDescription = if (micEnabled) "Turn microphone off" else "Turn microphone on",
+              imageVector = if (speechDialogActive) Icons.Default.MicOff else Icons.Default.Mic,
+              contentDescription = if (speechDialogActive) "Speech recognition in progress" else "Tap to speak",
               modifier =
                 Modifier
                   .size(24.dp)
                   .graphicsLayer {
-                    val bump = if (micEnabled && micSpeechDetected) (1f + micInputLevel.coerceIn(0f, 1f) * 0.18f) else 1f
+                    val bump = if (speechDialogActive || (micEnabled && micSpeechDetected)) (1f + micInputLevel.coerceIn(0f, 1f) * 0.18f) else 1f
                     scaleX = bump
                     scaleY = bump
                   },
@@ -315,6 +347,7 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
           queueCount > 0 -> "$queueCount queued"
           micIsSending -> "Sending"
           micCooldown -> "Cooldown"
+          speechDialogActive -> "Listening (system dialog)"
           micEnabled && micSpeechDetected -> "Hearing voice"
           micEnabled && micStatusText.isNotBlank() -> micStatusText
           micEnabled -> "Listening"
@@ -322,6 +355,7 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
         }
       val stateColor =
         when {
+          speechDialogActive -> mobileAccent
           micEnabled && micSpeechDetected -> mobileAccent
           micEnabled -> mobileSuccess
           micIsSending -> mobileAccent

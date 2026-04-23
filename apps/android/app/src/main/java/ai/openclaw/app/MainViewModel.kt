@@ -289,6 +289,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     ensureRuntime().setSpeakerEnabled(enabled)
   }
 
+  fun submitVoiceTranscript(text: String) {
+    ensureRuntime().submitVoiceTranscript(text)
+  }
+
   fun refreshGatewayConnection() {
     ensureRuntime().refreshGatewayConnection()
   }

@@ -792,6 +792,10 @@ class NodeRuntime(
     talkMode.setPlaybackEnabled(value)
   }
 
+  fun submitVoiceTranscript(text: String) {
+    micCapture.submitManualTranscript(text)
+  }
+
   private fun stopActiveVoiceSession() {
     talkMode.ttsOnAllResponses = false
     stopVoicePlayback()
