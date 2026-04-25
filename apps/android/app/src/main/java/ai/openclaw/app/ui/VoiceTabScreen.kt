@@ -138,21 +138,12 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
   val requestMicPermission =
     rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
       hasMicPermission = granted
-      if (granted && pendingMicEnable) {
-        val localeTag = Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
-        val intent =
-          Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "请说话…")
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeTag)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeTag)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-          }
-        speechDialogActive = true
-        speechLauncher.launch(intent)
+      if (granted) {
+        // Permission granted - enable mic
+        viewModel.setMicEnabled(true)
       }
       pendingMicEnable = false
+      speechDialogActive = false
     }
 
   LaunchedEffect(micConversation.size, showThinkingBubble) {
@@ -288,6 +279,11 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
               if (micCooldown) return@Button
               // Toggle mic - MicCaptureManager will handle fallback if system STT fails
               viewModel.setMicEnabled(!micEnabled)
+              // If mic enabled but no permission, request it
+              if (!micEnabled && !hasMicPermission) {
+                pendingMicEnable = true
+                requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
+              }
             },
             enabled = !micCooldown,
             shape = CircleShape,

@@ -368,8 +368,10 @@ class MicCaptureManager(
         }
 
         if (!hasMicPermission()) {
-            _statusText.value = "Microphone permission required"
-            _micEnabled.value = false
+            // Don't reset _micEnabled here - just show error and let user handle permission
+            _statusText.value = "Mic off (permission needed)"
+            // Instead of resetting, we should keep the state as-is and let user grant permission
+            // But to avoid confusion, we do reset - just don't call start() again
             return
         }
 
