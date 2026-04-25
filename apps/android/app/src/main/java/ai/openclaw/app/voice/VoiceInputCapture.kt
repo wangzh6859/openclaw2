@@ -41,69 +41,95 @@ class VoiceInputCapture(
   private var audioRecord: AudioRecord? = null
   private var captureJob: Job? = null
 
-  fun startCapture() {
-    if (_isCapturing.value) return
+  /**
+   * Start audio capture. Returns true if capture started successfully.
+   * If false is returned, the device may not support audio recording.
+   */
+  fun startCapture(): Boolean {
+    if (_isCapturing.value) return true
     if (!hasMicPermission()) {
       Log.w(tag, "no mic permission")
-      return
+      return false
     }
 
+    // Initialize AudioRecord BEFORE setting _isCapturing = true
+    // This way we can return false if initialization fails
+    val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+    if (minBufferSize <= 0) {
+      Log.e(tag, "Invalid buffer size: $minBufferSize, audio hardware may be unavailable")
+      return false
+    }
+
+    val effectiveBufferSize = (minBufferSize * 2).coerceAtLeast(frameSize * 4)
+
+    val record: AudioRecord
+    try {
+      record = AudioRecord(
+        MediaRecorder.AudioSource.MIC,
+        sampleRate,
+        channelConfig,
+        audioFormat,
+        effectiveBufferSize,
+      )
+    } catch (err: Throwable) {
+      Log.e(tag, "AudioRecord creation failed: ${err.message}")
+      return false
+    }
+
+    // Check if AudioRecord was successfully initialized
+    if (record.state != AudioRecord.STATE_INITIALIZED) {
+      Log.e(tag, "AudioRecord not initialized, state=${record.state}")
+      try { record.release() } catch (_: Throwable) { }
+      return false
+    }
+
+    audioRecord = record
     _isCapturing.value = true
+
     captureJob?.cancel()
-    captureJob =
-      scope.launch(Dispatchers.Default) {
-        try {
-          val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-          val effectiveBufferSize = (minBufferSize * 2).coerceAtLeast(frameSize * 4)
+    captureJob = scope.launch(Dispatchers.Default) {
+      try {
+        record.startRecording()
+        val buffer = ShortArray(frameSize)
+        val floatFrame = FloatArray(frameSize)
 
-          audioRecord =
-            AudioRecord(
-              MediaRecorder.AudioSource.MIC,
-              sampleRate,
-              channelConfig,
-              audioFormat,
-              effectiveBufferSize,
-            )
-
-          audioRecord?.startRecording()
-          val buffer = ShortArray(frameSize)
-          val floatFrame = FloatArray(frameSize)
-
-          while (_isCapturing.value) {
-            val numRead = audioRecord?.read(buffer, 0, frameSize) ?: break
-            if (numRead <= 0) {
-              delay(5)
-              continue
-            }
-
-            // Convert to float and compute RMS
-            var sumSq = 0.0
-            for (i in 0 until numRead) {
-              val normalized = buffer[i] / 32768f
-              floatFrame[i] = normalized
-              sumSq += normalized * normalized
-            }
-
-            val rms = sqrt(sumSq / numRead)
-            val levelDb = (20.0 * kotlin.math.log10((rms + 1e-6).coerceAtLeast(1e-6))).toFloat()
-            val normalizedLevel = ((levelDb - silenceThresholdDb) / (-silenceThresholdDb)).coerceIn(0f, 1f)
-            onLevelChanged(normalizedLevel)
-
-            // Send frame
-            onAudioFrame(floatFrame.copyOfRange(0, numRead))
+        while (_isCapturing.value) {
+          val numRead = record.read(buffer, 0, frameSize)
+          if (numRead <= 0) {
+            delay(5)
+            continue
           }
-        } catch (err: Throwable) {
-          Log.e(tag, "capture error: ${err.message}")
-        } finally {
-          try {
-            audioRecord?.stop()
-            audioRecord?.release()
-          } catch (_: Throwable) {
+
+          // Convert to float and compute RMS
+          var sumSq = 0.0
+          for (i in 0 until numRead) {
+            val normalized = buffer[i] / 32768f
+            floatFrame[i] = normalized
+            sumSq += normalized * normalized
           }
-          audioRecord = null
-          _isCapturing.value = false
+
+          val rms = sqrt(sumSq / numRead)
+          val levelDb = (20.0 * kotlin.math.log10((rms + 1e-6).coerceAtLeast(1e-6))).toFloat()
+          val normalizedLevel = ((levelDb - silenceThresholdDb) / (-silenceThresholdDb)).coerceIn(0f, 1f)
+          onLevelChanged(normalizedLevel)
+
+          // Send frame
+          onAudioFrame(floatFrame.copyOfRange(0, numRead))
         }
+      } catch (err: Throwable) {
+        Log.e(tag, "capture error: ${err.message}")
+      } finally {
+        _isCapturing.value = false
+        try {
+          record.stop()
+          record.release()
+        } catch (_: Throwable) {
+        }
+        audioRecord = null
       }
+    }
+
+    return true
   }
 
   fun stopCapture() {

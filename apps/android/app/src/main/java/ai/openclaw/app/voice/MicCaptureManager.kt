@@ -488,7 +488,7 @@ class MicCaptureManager(
     diagReadyCount += 1
     refreshDiagnostics("fallback-start")
 
-    voiceInputCapture =
+    val capture =
       VoiceInputCapture(
         context = context,
         scope = scope,
@@ -508,7 +508,17 @@ class MicCaptureManager(
           }
         },
       )
-    if (voiceInputCapture?.isCapturing?.value != true) {
+
+    // Start capture and check result
+    if (!capture.startCapture()) {
+      Log.e("MicCapture", "Fallback capture failed to start")
+      _statusText.value = "Mic unavailable"
+      _isListening.value = false
+      _micEnabled.value = false
+      fallbackActive = false
+      return
+    }
+    voiceInputCapture = capture
       Log.e("MicCapture", "Fallback capture failed to start")
       _statusText.value = "Mic unavailable"
       _isListening.value = false
