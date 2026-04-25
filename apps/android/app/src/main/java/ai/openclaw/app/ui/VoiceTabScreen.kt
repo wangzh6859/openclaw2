@@ -1,10 +1,16 @@
 package ai.openclaw.app.ui
 
+import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
-import android.util.Log
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.provider.Settings
 import android.speech.RecognizerIntent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -133,27 +139,20 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
     rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
       hasMicPermission = granted
       if (granted && pendingMicEnable) {
-        try {
-          val localeTag = Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
-          val intent =
-            Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-              putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-              putExtra(RecognizerIntent.EXTRA_PROMPT, "请说话…")
-              putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-              putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeTag)
-              putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeTag)
-              putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-            }
-          speechDialogActive = true
-          speechLauncher.launch(intent)
-        } catch (e: Exception) {
-          Log.e("VoiceTab", "Failed to launch speech recognizer: ${e.message}")
-          speechDialogActive = false
-          pendingMicEnable = false
-        }
-      } else {
-        pendingMicEnable = false
+        val localeTag = Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
+        val intent =
+          Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "请说话…")
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeTag)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeTag)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+          }
+        speechDialogActive = true
+        speechLauncher.launch(intent)
       }
+      pendingMicEnable = false
     }
 
   LaunchedEffect(micConversation.size, showThinkingBubble) {
@@ -286,12 +285,24 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
           )
           Button(
             onClick = {
-              try {
-                if (micCooldown || speechDialogActive) return@Button
-                // Simply toggle mic - let MicCaptureManager handle all capture logic
-                viewModel.setMicEnabled(!micEnabled)
-              } catch (e: Exception) {
-                Log.e("VoiceTab", "Mic button error: ${e.message}")
+              if (micCooldown || speechDialogActive) return@Button
+              viewModel.setMicEnabled(false)
+              if (hasMicPermission) {
+                val localeTag = Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
+                val intent =
+                  Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_PROMPT, "请说话…")
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeTag)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeTag)
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+                  }
+                speechDialogActive = true
+                speechLauncher.launch(intent)
+              } else {
+                pendingMicEnable = true
+                requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
               }
             },
             enabled = !micCooldown,
