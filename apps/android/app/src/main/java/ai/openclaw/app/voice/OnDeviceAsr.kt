@@ -79,9 +79,15 @@ object VoskRecognizer {
         Log.d(TAG, "[VOSK] flush final: $result")
         parseAndEmit(result, isFinal = true)
       }
+      rec.reset()  // Reset so next session starts clean
     } catch (e: Throwable) {
       Log.w(TAG, "flush error: ${e.message}")
     }
+  }
+
+  /** Reset recognizer state (call before new session). */
+  fun reset() {
+    try { recognizer?.reset() } catch (_: Throwable) { }
   }
 
   private fun parseAndEmit(jsonResult: String, isFinal: Boolean) {

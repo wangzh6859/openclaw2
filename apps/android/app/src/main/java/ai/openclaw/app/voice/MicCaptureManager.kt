@@ -572,6 +572,7 @@ class MicCaptureManager(
 
     // Flush Vosk to get any remaining final result
     ai.openclaw.app.voice.VoskRecognizer.flush()
+    ai.openclaw.app.voice.VoskRecognizer.reset()
 
     fallbackAudioFrames.clear()
     fallbackSilenceCounter = 0
