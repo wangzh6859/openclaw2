@@ -285,25 +285,9 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
           )
           Button(
             onClick = {
-              if (micCooldown || speechDialogActive) return@Button
-              viewModel.setMicEnabled(false)
-              if (hasMicPermission) {
-                val localeTag = Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
-                val intent =
-                  Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    putExtra(RecognizerIntent.EXTRA_PROMPT, "请说话…")
-                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeTag)
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeTag)
-                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-                  }
-                speechDialogActive = true
-                speechLauncher.launch(intent)
-              } else {
-                pendingMicEnable = true
-                requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
-              }
+              if (micCooldown) return@Button
+              // Toggle mic - MicCaptureManager will handle fallback if system STT fails
+              viewModel.setMicEnabled(!micEnabled)
             },
             enabled = !micCooldown,
             shape = CircleShape,
