@@ -480,6 +480,7 @@ class MicCaptureManager(
 
   private fun startFallbackVoiceCapture() {
     if (fallbackActive) return
+    Log.d("MicCapture", "[FALLBACK] Starting fallback voice capture")
     fallbackActive = true
     fallbackAudioFrames.clear()
     fallbackSilenceCounter = 0
@@ -511,13 +512,14 @@ class MicCaptureManager(
 
     // Start capture and check result
     if (!capture.startCapture()) {
-      Log.e("MicCapture", "Fallback capture failed to start")
+      Log.e("MicCapture", "[FALLBACK] startCapture() returned false — AudioRecord init failed")
       _statusText.value = "Mic unavailable"
       _isListening.value = false
       _micEnabled.value = false
       fallbackActive = false
       return
     }
+    Log.d("MicCapture", "[FALLBACK] startCapture() returned true — capture is running")
     voiceInputCapture = capture
   }
 
