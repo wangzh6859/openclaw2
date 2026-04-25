@@ -95,7 +95,7 @@ class BackendAsrClient(
         method: String,
         paramsJson: String,
         timeoutMs: Long,
-    ): ai.openclaw.app.gateway.GatewaySession.RpcResult {
+    ): String {
         val activeSession = session
             ?: throw IllegalStateException("GatewaySession not available")
 
