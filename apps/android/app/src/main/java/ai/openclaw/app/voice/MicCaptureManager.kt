@@ -506,7 +506,14 @@ class MicCaptureManager(
           }
         },
       )
-    voiceInputCapture?.startCapture()
+    if (voiceInputCapture?.isCapturing?.value != true) {
+      Log.e("MicCapture", "Fallback capture failed to start")
+      _statusText.value = "Mic unavailable"
+      _isListening.value = false
+      _micEnabled.value = false
+      fallbackActive = false
+      return
+    }
   }
 
   private fun stopFallbackVoiceCapture() {
