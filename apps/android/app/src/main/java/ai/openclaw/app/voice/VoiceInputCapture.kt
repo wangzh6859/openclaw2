@@ -54,6 +54,11 @@ class VoiceInputCapture(
       scope.launch(Dispatchers.Default) {
         try {
           val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+          if (minBufferSize <= 0) {
+            Log.e(tag, "AudioRecord.getMinBufferSize returned $minBufferSize")
+            _isCapturing.value = false
+            return@launch
+          }
           val effectiveBufferSize = (minBufferSize * 2).coerceAtLeast(frameSize * 4)
 
           audioRecord =
@@ -64,6 +69,14 @@ class VoiceInputCapture(
               audioFormat,
               effectiveBufferSize,
             )
+
+          if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+            Log.e(tag, "AudioRecord not initialized, state=${audioRecord?.state}")
+            audioRecord?.release()
+            audioRecord = null
+            _isCapturing.value = false
+            return@launch
+          }
 
           audioRecord?.startRecording()
           val buffer = ShortArray(frameSize)
