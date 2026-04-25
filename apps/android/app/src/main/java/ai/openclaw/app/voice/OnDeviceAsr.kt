@@ -3,7 +3,6 @@ package ai.openclaw.app.voice
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
@@ -12,9 +11,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.vosk.Model
+import org.vosk.Recognizer
 import org.vosk.android.RecognitionListener
 import org.vosk.android.SpeechService
-import org.vosk.android.StorageService
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
@@ -53,6 +53,8 @@ class OnDeviceAsr(
   // ── Vosk ───────────────────────────────────────────────────────────────────
 
   private var voskService: SpeechService? = null
+  private var voskRecognizer: Recognizer? = null
+  private var voskModel: Model? = null
   private var voskActive = false
 
   // ── Engine selection ──────────────────────────────────────────────────────
@@ -95,8 +97,12 @@ class OnDeviceAsr(
     try {
       voskService?.stop()
       voskService?.shutdown()
+      voskService = null
+      voskRecognizer?.close()
+      voskRecognizer = null
+      voskModel?.close()
+      voskModel = null
     } catch (_: Throwable) { }
-    voskService = null
   }
 
   // ── Google implementation ─────────────────────────────────────────────────
@@ -259,10 +265,11 @@ class OnDeviceAsr(
         }
       }
 
-      voskService = SpeechService(
-        modelDir.absolutePath,
-        VOSK_SAMPLE_RATE,
-      )
+      val model = Model(modelDir.absolutePath)
+      val recognizer = Recognizer(model, VOSK_SAMPLE_RATE)
+      voskModel = model
+      voskRecognizer = recognizer
+      voskService = SpeechService(recognizer, VOSK_SAMPLE_RATE)
       voskService?.startListening(listener)
       voskActive = true
       activeEngine = "vosk"
