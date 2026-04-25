@@ -140,20 +140,27 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
     rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
       hasMicPermission = granted
       if (granted && pendingMicEnable) {
-        val localeTag = Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
-        val intent =
-          Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "请说话…")
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeTag)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeTag)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-          }
-        speechDialogActive = true
-        speechLauncher.launch(intent)
+        try {
+          val localeTag = Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
+          val intent =
+            Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+              putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+              putExtra(RecognizerIntent.EXTRA_PROMPT, "请说话…")
+              putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+              putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeTag)
+              putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeTag)
+              putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            }
+          speechDialogActive = true
+          speechLauncher.launch(intent)
+        } catch (e: Exception) {
+          Log.e("VoiceTab", "Failed to launch speech recognizer: ${e.message}")
+          speechDialogActive = false
+          pendingMicEnable = false
+        }
+      } else {
+        pendingMicEnable = false
       }
-      pendingMicEnable = false
     }
 
   LaunchedEffect(micConversation.size, showThinkingBubble) {
@@ -290,6 +297,12 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
                 if (micCooldown || speechDialogActive) return@Button
                 viewModel.setMicEnabled(false)
                 if (hasMicPermission) {
+                  // Check if SpeechRecognizer is available before launching
+                  if (!android.speech.SpeechRecognizer.isRecognitionAvailable(context)) {
+                    Log.w("VoiceTab", "Speech recognizer not available")
+                    // Fall through to MicCaptureManager mode - don't launch system dialog
+                    return@Button
+                  }
                   val localeTag = Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
                   val intent =
                     Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
