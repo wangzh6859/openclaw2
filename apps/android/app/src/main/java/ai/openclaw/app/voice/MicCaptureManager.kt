@@ -355,42 +355,42 @@ class MicCaptureManager(
     }
   }
 
-  private fun start() {
-    stopRequested = false
-    recognizerBusyStreak = 0
-    refreshDiagnostics("start")
-    if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-      _statusText.value = "Speech recognizer unavailable"
-      _micEnabled.value = false
-      return
-    }
-    if (!hasMicPermission()) {
-      _statusText.value = "Microphone permission required"
-      _micEnabled.value = false
-      return
+    private fun start() {
+        stopRequested = false
+        recognizerBusyStreak = 0
+        refreshDiagnostics("start")
+
+        // Check system STT availability first
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            Log.w("MicCapture", "System STT unavailable, using fallback")
+            startFallbackVoiceCapture()
+            return
+        }
+
+        if (!hasMicPermission()) {
+            _statusText.value = "Microphone permission required"
+            _micEnabled.value = false
+            return
+        }
+
+        mainHandler.post {
+            try {
+                // Always recreate on mic start to avoid stale/busy recognizer instances
+                try { recognizer?.cancel() } catch (_: Throwable) { }
+                try { recognizer?.destroy() } catch (_: Throwable) { }
+
+                recognizer = SpeechRecognizer.createSpeechRecognizer(context).also {
+                    it.setRecognitionListener(listener)
+                }
+                startListeningSession()
+            } catch (err: Throwable) {
+                Log.w("MicCapture", "System STT failed, switching to fallback: ${err.message}")
+                // System STT failed, switch to fallback immediately
+                startFallbackVoiceCapture()
+            }
+        }
     }
 
-    mainHandler.post {
-      try {
-        // Always recreate on mic start to avoid stale/busy recognizer instances
-        // left behind by previous app lifecycle or OEM speech service quirks.
-        try {
-          recognizer?.cancel()
-        } catch (_: Throwable) {
-        }
-        try {
-          recognizer?.destroy()
-        } catch (_: Throwable) {
-        }
-        recognizer = SpeechRecognizer.createSpeechRecognizer(context).also { it.setRecognitionListener(listener) }
-        startListeningSession()
-      } catch (err: Throwable) {
-        _statusText.value = "Start failed: ${err.message ?: err::class.simpleName}"
-        _micEnabled.value = false
-        refreshDiagnostics("start-failed")
-      }
-    }
-  }
 
   private fun stop() {
     stopRequested = true
