@@ -43,7 +43,7 @@ class BackendAsrClient(
                 Log.d(TAG, "Sending ${audioBytes.size} bytes to ASR")
 
                 // Call gateway RPC
-                val result = performRequest(
+                val resultJson = performRequest(
                     method = "voice.asr",
                     paramsJson = buildJsonObject {
                         put("audio_base64", audioBase64)
@@ -54,15 +54,16 @@ class BackendAsrClient(
                     timeoutMs = ASR_TIMEOUT_MS
                 )
 
-                if (result.ok) {
-                    Log.d(TAG, "ASR success: ${result.payloadJson}")
-                    // Parse transcription from response
-                    val transcription = parseTranscription(result.payloadJson)
+                // Parse result - resultJson is a String response from gateway
+                Log.d(TAG, "ASR response: $resultJson")
+                
+                // Try to extract text from response
+                val transcription = parseTranscription(resultJson)
+                if (transcription.isNotEmpty()) {
                     onStatus("Transcribed: $transcription")
                     onTranscription(transcription)
                 } else {
-                    Log.e(TAG, "ASR failed: ${result.error?.message}")
-                    onStatus("ASR failed: ${result.error?.message}")
+                    onStatus("ASR completed (no text)")
                 }
 
             } catch (err: Throwable) {
