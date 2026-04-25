@@ -1,356 +1,169 @@
 package ai.openclaw.app.voice
 
 import android.content.Context
-import android.content.Intent
-import android.os.Bundle
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.vosk.Model
 import org.vosk.Recognizer
-import org.vosk.android.RecognitionListener
-import org.vosk.android.SpeechService
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
-import java.util.zip.ZipInputStream
 
 /**
- * On-device ASR with priority: Google Speech Services → Vosk offline.
+ * Singleton on-device ASR using Vosk.
  *
- * Flow:
- * 1. Try Google SpeechRecognizer first (uses Google Speech Services if available)
- * 2. On 3 consecutive CLIENT/PERMISSION/BUSY errors, switch to Vosk
- * 3. Vosk runs offline Chinese model, self-downloads on first run
+ * Architecture:
+ * - VoiceInputCapture captures PCM via AudioRecord (16kHz mono)
+ * - PCM bytes are piped to VoskRecognizer via feedPcm()
+ * - Recognized text is emitted via onTranscript callback
+ *
+ * The Vosk Chinese model (vosk-model-cn-0.3, ~50MB) is downloaded
+ * at runtime from alphacephei.com on first use.
  */
-class OnDeviceAsr(
-  private val context: Context,
-  private val scope: CoroutineScope,
-  private val onTranscript: (String, isFinal: Boolean) -> Unit,
-  private val onError: (String) -> Unit,
-  private val onReady: () -> Unit,
-) {
-  companion object {
-    private const val TAG = "OnDeviceAsr"
-    private const val GOOGLE_ERROR_STREAK_THRESHOLD = 3
-    // Vosk Chinese model — downloaded at runtime from alphacephei.com
-    private const val VOSK_MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-cn-0.3.zip"
-    private const val VOSK_MODEL_DIR = "vosk-model-cn-0.3"
-    private const val VOSK_SAMPLE_RATE = 16000f
+object VoskRecognizer {
+  private const val TAG = "VoskAsr"
+  private const val VOSK_MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-cn-0.3.zip"
+  private const val VOSK_MODEL_DIR = "vosk-model-cn-0.3"
+  private const val VOSK_SAMPLE_RATE = 16000f
+
+  private var model: Model? = null
+  private var recognizer: Recognizer? = null
+  private var ready = false
+  private var downloadJobStarted = false
+
+  // Text callback — wired by callers (MicCaptureManager)
+  var onTranscript: ((String, Boolean) -> Unit)? = null
+
+  /**
+   * Feed 16-bit mono PCM samples (from AudioRecord) into Vosk.
+   * pcmBytes must be little-endian 16-bit PCM at 16kHz.
+   * Float values are normalized to -1..1 range internally.
+   */
+  fun feedPcm(pcmBytes: ByteArray) {
+    val rec = recognizer ?: return
+
+    // Convert 16-bit PCM bytes to float samples
+    val numSamples = pcmBytes.size / 2
+    val floatSamples = FloatArray(numSamples)
+    for (i in 0 until numSamples) {
+      val low = pcmBytes[i * 2].toInt() and 0xFF
+      val high = pcmBytes[i * 2 + 1].toInt()
+      val sample = (low or (high shl 8)).toShort().toInt()
+      floatSamples[i] = sample / 32768f
+    }
+
+    // Feed to Vosk recognizer
+    val gotResult = rec.acceptWaveForm(floatSamples, floatSamples.size)
+    if (gotResult) {
+      val result = rec.result
+      parseAndEmit(result, isFinal = true)
+    } else {
+      val partial = rec.partialResult
+      parseAndEmit(partial, isFinal = false)
+    }
   }
 
-  // ── Google ─────────────────────────────────────────────────────────────────
-
-  private var googleRecognizer: SpeechRecognizer? = null
-  private var googleClientStreak = 0
-  private var googleActive = false
-
-  // ── Vosk ───────────────────────────────────────────────────────────────────
-
-  private var voskService: SpeechService? = null
-  private var voskRecognizer: Recognizer? = null
-  private var voskModel: Model? = null
-  private var voskActive = false
-
-  // ── Engine selection ──────────────────────────────────────────────────────
-
-  private var activeEngine: String = "google"
-
-  /** Start Google SpeechRecognizer. Returns true if it started. */
-  fun startGoogle(): Boolean {
-    if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-      Log.w(TAG, "Google SpeechRecognizer not available")
-      return false
-    }
+  private fun parseAndEmit(jsonResult: String, isFinal: Boolean) {
+    if (jsonResult.isBlank()) return
     try {
-      googleRecognizer?.destroy()
-      googleRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
-      activeEngine = "google"
-      return true
-    } catch (err: Throwable) {
-      Log.e(TAG, "createSpeechRecognizer failed: ${err.message}")
-      return false
+      // Vosk JSON: {"result" : [...], "text": "hello"}
+      // or {"partial": "he"}
+      val text = extractText(jsonResult)
+      if (text.isNotBlank()) {
+        onTranscript?.invoke(text, isFinal)
+      }
+    } catch (e: Throwable) {
+      Log.w(TAG, "parse error: ${e.message}")
     }
   }
 
-  /** Start listening with current engine. */
-  fun startListening() {
-    when (activeEngine) {
-      "google" -> startGoogleListening()
-      "vosk" -> startVoskListening()
-    }
+  private fun extractText(json: String): String {
+    val textMatch = Regex(""""text"\s*:\s*"([^"]*)"""").find(json)
+    if (textMatch != null) return textMatch.groupValues[1]
+    val partialMatch = Regex(""""partial"\s*:\s*"([^"]*)"""").find(json)
+    return partialMatch?.groupValues?.get(1) ?: ""
   }
 
-  fun stop() {
-    try {
-      googleRecognizer?.stopListening()
-      googleRecognizer?.cancel()
-      googleRecognizer?.destroy()
-    } catch (_: Throwable) { }
-    googleRecognizer = null
-
-    try {
-      voskService?.stop()
-      voskService?.shutdown()
-      voskService = null
-      voskRecognizer?.close()
-      voskRecognizer = null
-      voskModel?.close()
-      voskModel = null
-    } catch (_: Throwable) { }
-  }
-
-  // ── Google implementation ─────────────────────────────────────────────────
-
-  // Google SpeechRecognizer RecognitionListener
-  private val googleListener = object : android.speech.RecognitionListener {
-    override fun onReadyForSpeech(params: Bundle?) {
-      googleClientStreak = 0
+  /**
+   * Initialize Vosk recognizer from pre-downloaded model.
+   * Call once at app startup.
+   */
+  fun init(context: Context, scope: CoroutineScope, onReady: () -> Unit) {
+    if (ready) {
+      onReady()
+      return
     }
+    if (downloadJobStarted) return
+    downloadJobStarted = true
 
-    override fun onBeginningOfSpeech() {}
-    override fun onRmsChanged(rmsDb: Float) {}
-    override fun onBufferReceived(buffer: ByteArray?) {}
-    override fun onEndOfSpeech() {}
-
-    override fun onPartialResults(partialResults: Bundle?) {
-      val text = partialResults
-        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-        ?.firstOrNull()
-        ?.trim()
-      if (!text.isNullOrBlank()) {
-        onTranscript(text, false)
-      }
-    }
-
-    override fun onResults(results: Bundle?) {
-      val text = results
-        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-        ?.firstOrNull()
-        ?.trim()
-      if (!text.isNullOrBlank()) {
-        onTranscript(text, true)
-      }
-      googleClientStreak = 0
-      // Re-start for next utterance
-      if (activeEngine == "google" && googleActive) {
-        scope.launch {
-          delay(200L)
-          startGoogleListening()
-        }
-      }
-    }
-
-    override fun onError(error: Int) {
-      val errorName = when (error) {
-        SpeechRecognizer.ERROR_AUDIO -> "AUDIO"
-        SpeechRecognizer.ERROR_CLIENT -> "CLIENT"
-        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "PERMISSION"
-        SpeechRecognizer.ERROR_NETWORK -> "NETWORK"
-        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "NETWORK_TIMEOUT"
-        SpeechRecognizer.ERROR_NO_MATCH -> "NO_MATCH"
-        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "BUSY"
-        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "SPEECH_TIMEOUT"
-        else -> "UNKNOWN($error)"
-      }
-      Log.w(TAG, "Google onError: $errorName (streak=$googleClientStreak)")
-
-      val isFatalError =
-        error == SpeechRecognizer.ERROR_CLIENT ||
-          error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ||
-          error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY
-
-      if (isFatalError) {
-        googleClientStreak++
-        if (googleClientStreak >= GOOGLE_ERROR_STREAK_THRESHOLD) {
-          Log.w(TAG, "Google error streak=$googleClientStreak → switching to Vosk")
-          switchToVosk()
-          return
-        }
-      }
-
-      scope.launch {
-        delay(800L)
-        if (activeEngine == "google") startGoogleListening()
-      }
-    }
-
-    override fun onEvent(eventType: Int, params: Bundle?) {}
-  }
-
-  private fun startGoogleListening() {
-    val rec = googleRecognizer ?: run {
-      if (!startGoogle()) {
-        onError("Google SpeechRecognizer unavailable")
-        return
-      }
-      googleRecognizer!!
-    }
-
-    val locale = java.util.Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
-    val intent =
-      Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, locale)
-        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-      }
-
-    googleActive = true
-    rec.setRecognitionListener(googleListener)
-
-    try {
-      rec.startListening(intent)
-    } catch (err: Throwable) {
-      Log.e(TAG, "startListening failed: ${err.message}")
-      switchToVosk()
-    }
-  }
-
-  // ── Vosk implementation ─────────────────────────────────────────────────────
-
-  // Vosk SpeechService RecognitionListener
-  private val voskListener = object : RecognitionListener {
-    override fun onPartialResult(partial: String?) {
-      if (!partial.isNullOrBlank()) {
-        onTranscript(partial, false)
-      }
-    }
-
-    override fun onResult(result: String?) {
-      if (!result.isNullOrBlank()) {
-        onTranscript(result, true)
-      }
-    }
-
-    override fun onFinalResult(result: String?) {
-      if (!result.isNullOrBlank()) {
-        onTranscript(result, true)
-      }
-    }
-
-    override fun onError(e: Exception?) {
-      Log.e(TAG, "Vosk error: ${e?.message}")
-      // Restart on error
-      if (voskActive) {
-        scope.launch {
-          delay(500L)
-          if (voskActive) startVoskListening()
-        }
-      }
-    }
-
-    override fun onTimeout() {
-      Log.w(TAG, "Vosk timeout")
-      if (voskActive) {
-        scope.launch {
-          delay(500L)
-          if (voskActive) startVoskListening()
-        }
-      }
-    }
-  }
-
-  private fun startVoskListening() {
     val modelDir = File(context.filesDir, VOSK_MODEL_DIR)
 
     if (!modelDir.exists()) {
-      // Download and extract model
-      onReady() // Notify that we're downloading
-      _downloadVoskModel(modelDir) { success ->
-        if (success) {
-          _initAndStartVosk(modelDir)
-        } else {
-          onError("Vosk model download failed")
-        }
+      Log.d(TAG, "Vosk model not found — downloading in background")
+      downloadModel(modelDir, scope) {
+        initModel(modelDir, onReady)
       }
     } else {
-      _initAndStartVosk(modelDir)
+      Log.d(TAG, "Vosk model found at ${modelDir.absolutePath}")
+      initModel(modelDir, onReady)
     }
   }
 
-  private fun _initAndStartVosk(modelDir: File) {
+  private fun initModel(modelDir: File, onReady: () -> Unit) {
     try {
-      val model = Model(modelDir.absolutePath)
-      val recognizer = Recognizer(model, VOSK_SAMPLE_RATE)
-      voskModel = model
-      voskRecognizer = recognizer
-      voskService = SpeechService(recognizer, VOSK_SAMPLE_RATE)
-      voskService?.startListening(voskListener)
-      voskActive = true
-      activeEngine = "vosk"
+      model = Model(modelDir.absolutePath)
+      recognizer = Recognizer(model!!, VOSK_SAMPLE_RATE).apply {
+        setMaxAlternatives(0)
+        setWords(false)
+      }
+      ready = true
       onReady()
-      Log.d(TAG, "Vosk SpeechService started")
-    } catch (err: Throwable) {
-      Log.e(TAG, "Vosk init failed: ${err.message}")
-      onError("Vosk init failed: ${err.message}")
+      Log.d(TAG, "Vosk recognizer ready")
+    } catch (e: Throwable) {
+      Log.e(TAG, "Vosk init failed: ${e.message}")
     }
   }
 
-  private fun _downloadVoskModel(modelDir: File, onComplete: (Boolean) -> Unit) {
-    scope.launch {
+  private fun downloadModel(modelDir: File, scope: CoroutineScope, onDone: () -> Unit) {
+    scope.launch(Dispatchers.IO) {
       try {
-        Log.d(TAG, "Downloading Vosk model from $VOSK_MODEL_URL")
         val url = java.net.URL(VOSK_MODEL_URL)
-        val connection = url.openConnection() as java.net.HttpURLConnection
-        connection.connectTimeout = 30_000
-        connection.readTimeout = 120_000
-        connection.doInput = true
-        connection.connect()
+        val conn = url.openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = 30_000
+        conn.readTimeout = 120_000
+        conn.doInput = true
+        conn.connect()
 
-        val inputStream: InputStream = connection.inputStream
-        val zipStream = ZipInputStream(inputStream)
+        val input = conn.inputStream
+        val zipInput = java.util.zip.ZipInputStream(input)
+        var entry = zipInput.nextEntry
 
-        // Extract to modelDir
-        modelDir.mkdirs()
-        var entry = zipStream.nextEntry
         while (entry != null) {
-          val fileName = entry.name
-          if (!fileName.endsWith("/")) {
-            // Strip model prefix if present, keep relative path
-            val relativePath = if (fileName.startsWith("$VOSK_MODEL_DIR/")) {
-              fileName.removePrefix("$VOSK_MODEL_DIR/")
-            } else {
-              fileName
-            }
-            val outFile = File(modelDir, relativePath)
+          if (!entry.name.endsWith("/")) {
+            // Strip model dir prefix if present
+            val safeName = entry.name.substringAfter("$VOSK_MODEL_DIR/", entry.name)
+            val outFile = File(modelDir.parentFile, safeName)
             outFile.parentFile?.mkdirs()
             FileOutputStream(outFile).use { fos ->
-              zipStream.copyTo(fos)
+              zipInput.copyTo(fos)
             }
           }
-          zipStream.closeEntry()
-          entry = zipStream.nextEntry
+          zipInput.closeEntry()
+          entry = zipInput.nextEntry
         }
-        zipStream.close()
-        Log.d(TAG, "Vosk model extracted to ${modelDir.absolutePath}")
+        zipInput.close()
 
+        Log.d(TAG, "Vosk model downloaded to ${modelDir.absolutePath}")
         withContext(Dispatchers.Main) {
-          onComplete(true)
+          onDone()
         }
-      } catch (err: Throwable) {
-        Log.e(TAG, "Vosk model download failed: ${err.message}")
-        withContext(Dispatchers.Main) {
-          onComplete(false)
-        }
+      } catch (e: Throwable) {
+        Log.e(TAG, "Vosk model download failed: ${e.message}")
       }
     }
   }
 
-  private fun switchToVosk() {
-    googleActive = false
-    try {
-      googleRecognizer?.cancel()
-      googleRecognizer?.destroy()
-    } catch (_: Throwable) { }
-    googleRecognizer = null
-    activeEngine = "vosk"
-    startVoskListening()
-  }
+  fun isReady() = ready
 }

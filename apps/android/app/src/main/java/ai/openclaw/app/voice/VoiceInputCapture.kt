@@ -25,7 +25,12 @@ class VoiceInputCapture(
   private val scope: CoroutineScope,
   private val onAudioFrame: suspend (FloatArray) -> Unit = {},
   private val onLevelChanged: (Float) -> Unit = {},
+  // Optional ASR callback: receives transcripts as they arrive during capture
+  private val onAsrFeed: (suspend (ByteArray) -> Unit)? = null,
 ) {
+  init {
+    pcmFeed = onAsrFeed
+  }
   companion object {
     private const val tag = "VoiceInputCapture"
     private const val sampleRate = 16_000
@@ -40,6 +45,11 @@ class VoiceInputCapture(
 
   private var audioRecord: AudioRecord? = null
   private var captureJob: Job? = null
+  private var asrFeedJob: Job? = null
+  private var pcmFeed: (suspend (ByteArray) -> Unit)? = null
+
+  // PCM buffer for ASR (converted from 16-bit to float)
+  private val asrBuffer = java.util.concurrent.ConcurrentLinkedQueue<FloatArray>()
 
   /**
    * Start audio capture. Returns true if capture started successfully.
@@ -119,6 +129,12 @@ class VoiceInputCapture(
 
           // Send frame
           onAudioFrame(floatFrame.copyOfRange(0, numRead))
+          // Buffer for ASR feed
+          asrBuffer.offer(floatFrame.copyOfRange(0, numRead))
+          asrFeedJob?.cancel()
+          asrFeedJob = scope.launch(Dispatchers.Default) {
+            drainAsrBuffer()
+          }
         }
       } catch (err: Throwable) {
         Log.e(tag, "capture error: ${err.message}")
@@ -136,15 +152,33 @@ class VoiceInputCapture(
     return true
   }
 
+  private suspend fun drainAsrBuffer() {
+    val batch = mutableListOf<FloatArray>()
+    asrBuffer.drainTo(batch)
+    if (batch.isEmpty()) return
+    val totalSamples = batch.sumOf { it.size }
+    val pcmBytes = ByteArray(totalSamples * 2)
+    var offset = 0
+    for (frame in batch) {
+      for (sample in frame) {
+        val s = (sample.coerceIn(-1f, 1f) * 32767f).toInt().toShort()
+        pcmBytes[offset++] = (s.toInt() and 0xFF).toByte()
+        pcmBytes[offset++] = ((s.toInt() shr 8) and 0xFF).toByte()
+      }
+    }
+    pcmFeed?.invoke(pcmBytes)
+  }
+
   fun stopCapture() {
     _isCapturing.value = false
     captureJob?.cancel()
     captureJob = null
+    asrFeedJob?.cancel()
+    asrFeedJob = null
     try {
       audioRecord?.stop()
       audioRecord?.release()
-    } catch (_: Throwable) {
-    }
+    } catch (_: Throwable) { }
     audioRecord = null
   }
 

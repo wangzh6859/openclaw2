@@ -355,7 +355,18 @@ class MicCaptureManager(
     }
   }
 
-    private fun start() {
+    init {
+    // Initialize Vosk ASR in background (downloads model on first run)
+    ai.openclaw.app.voice.VoskRecognizer.init(
+      context = context,
+      scope = scope,
+      onReady = {
+        Log.d("MicCapture", "[VOSK] Recognizer ready")
+      },
+    )
+  }
+
+  private fun start() {
         stopRequested = false
         recognizerBusyStreak = 0
         refreshDiagnostics("start")
@@ -517,7 +528,21 @@ class MicCaptureManager(
             fallbackSilenceCounter += 1
           }
         },
+        onAsrFeed = { pcmBytes ->
+          // Feed raw PCM to Vosk recognizer
+          ai.openclaw.app.voice.VoskRecognizer.feedPcm(pcmBytes)
+        },
       )
+
+    // Wire up Vosk transcript handler
+    ai.openclaw.app.voice.VoskRecognizer.onTranscript = { text, isFinal ->
+      if (isFinal && text.isNotBlank()) {
+        queueRecognizedMessage(text)
+        sendQueuedIfIdle()
+        diagFinalCount += 1
+        refreshDiagnostics("vosk-final")
+      }
+    }
 
     // Start capture and check result
     if (!capture.startCapture()) {
@@ -539,14 +564,9 @@ class MicCaptureManager(
     voiceInputCapture = null
     _inputLevel.value = 0f
 
-    if (fallbackAudioFrames.isNotEmpty()) {
-      val durationMs = (fallbackAudioFrames.size * 10).toLong()
-      val transcript = "[Audio: ${durationMs}ms captured]"
-      queueRecognizedMessage(transcript)
-      sendQueuedIfIdle()
-      diagFinalCount += 1
-      refreshDiagnostics("fallback-done")
-    }
+    // Flush Vosk to get any remaining final result
+    ai.openclaw.app.voice.VoskRecognizer.flush()
+
     fallbackAudioFrames.clear()
     fallbackSilenceCounter = 0
     clearSpeechDetected("fallback-stop")
