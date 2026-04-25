@@ -48,15 +48,16 @@ class VoiceInputCapture(
   fun startCapture(): Boolean {
     if (_isCapturing.value) return true
     if (!hasMicPermission()) {
-      Log.w(tag, "no mic permission")
+      Log.e(tag, "[FALLBACK] no mic permission")
       return false
     }
 
     // Initialize AudioRecord BEFORE setting _isCapturing = true
     // This way we can return false if initialization fails
     val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+    Log.d(tag, "[FALLBACK] getMinBufferSize returned: $minBufferSize")
     if (minBufferSize <= 0) {
-      Log.e(tag, "Invalid buffer size: $minBufferSize, audio hardware may be unavailable")
+      Log.e(tag, "[FALLBACK] Invalid buffer size: $minBufferSize, audio hardware may be unavailable")
       return false
     }
 
@@ -64,6 +65,7 @@ class VoiceInputCapture(
 
     val record: AudioRecord
     try {
+      Log.d(tag, "[FALLBACK] Creating AudioRecord with buffer size: $effectiveBufferSize")
       record = AudioRecord(
         MediaRecorder.AudioSource.MIC,
         sampleRate,
@@ -72,13 +74,15 @@ class VoiceInputCapture(
         effectiveBufferSize,
       )
     } catch (err: Throwable) {
-      Log.e(tag, "AudioRecord creation failed: ${err.message}")
+      Log.e(tag, "[FALLBACK] AudioRecord creation failed: ${err.message}")
       return false
     }
 
+
     // Check if AudioRecord was successfully initialized
+    Log.d(tag, "[FALLBACK] AudioRecord state: ${record.state} (STATE_INITIALIZED=${AudioRecord.STATE_INITIALIZED})")
     if (record.state != AudioRecord.STATE_INITIALIZED) {
-      Log.e(tag, "AudioRecord not initialized, state=${record.state}")
+      Log.e(tag, "[FALLBACK] AudioRecord not initialized, state=${record.state}")
       try { record.release() } catch (_: Throwable) { }
       return false
     }

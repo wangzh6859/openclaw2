@@ -385,6 +385,15 @@ class MicCaptureManager(
                     it.setRecognitionListener(listener)
                 }
                 startListeningSession()
+                
+                // Force immediate fallback to test AudioRecord
+                scope.launch {
+                    delay(500L)
+                    if (!_isListening.value) {
+                        Log.w("MicCapture", "[FALLBACK] Recognizer not listening after 500ms, forcing fallback")
+                        startFallbackVoiceCapture()
+                    }
+                }
             } catch (err: Throwable) {
                 Log.w("MicCapture", "System STT failed, switching to fallback: ${err.message}")
                 // System STT failed, switch to fallback immediately
