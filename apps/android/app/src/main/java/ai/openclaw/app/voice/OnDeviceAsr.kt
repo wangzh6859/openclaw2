@@ -65,6 +65,21 @@ object VoskRecognizer {
     }
   }
 
+  /** Flush remaining audio to get final result (call on stop). */
+  fun flush() {
+    val rec = recognizer ?: return
+    try {
+      // Feed ~200ms of silence to flush buffered audio
+      val silence = FloatArray((VOSK_SAMPLE_RATE * 0.2).toInt())
+      val gotResult = rec.acceptWaveForm(silence, silence.size)
+      if (gotResult) {
+        parseAndEmit(rec.result, isFinal = true)
+      }
+    } catch (e: Throwable) {
+      Log.w(TAG, "flush error: ${e.message}")
+    }
+  }
+
   private fun parseAndEmit(jsonResult: String, isFinal: Boolean) {
     if (jsonResult.isBlank()) return
     try {
