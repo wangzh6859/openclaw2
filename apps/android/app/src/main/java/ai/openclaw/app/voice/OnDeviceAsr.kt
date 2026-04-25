@@ -39,10 +39,10 @@ object VoskRecognizer {
   /**
    * Feed 16-bit mono PCM samples (from AudioRecord) into Vosk.
    * pcmBytes must be little-endian 16-bit PCM at 16kHz.
-   * Float values are normalized to -1..1 range internally.
    */
   fun feedPcm(pcmBytes: ByteArray) {
     val rec = recognizer ?: return
+    if (pcmBytes.isEmpty()) return
 
     // Convert 16-bit PCM bytes to float samples
     val numSamples = pcmBytes.size / 2
@@ -58,9 +58,11 @@ object VoskRecognizer {
     val gotResult = rec.acceptWaveForm(floatSamples, floatSamples.size)
     if (gotResult) {
       val result = rec.result
+      Log.d(TAG, "[VOSK] final result: $result")
       parseAndEmit(result, isFinal = true)
     } else {
       val partial = rec.partialResult
+      Log.d(TAG, "[VOSK] partial: $partial")
       parseAndEmit(partial, isFinal = false)
     }
   }
@@ -73,7 +75,9 @@ object VoskRecognizer {
       val silence = FloatArray((VOSK_SAMPLE_RATE * 0.2).toInt())
       val gotResult = rec.acceptWaveForm(silence, silence.size)
       if (gotResult) {
-        parseAndEmit(rec.result, isFinal = true)
+        val result = rec.result
+        Log.d(TAG, "[VOSK] flush final: $result")
+        parseAndEmit(result, isFinal = true)
       }
     } catch (e: Throwable) {
       Log.w(TAG, "flush error: ${e.message}")
@@ -83,9 +87,8 @@ object VoskRecognizer {
   private fun parseAndEmit(jsonResult: String, isFinal: Boolean) {
     if (jsonResult.isBlank()) return
     try {
-      // Vosk JSON: {"result" : [...], "text": "hello"}
-      // or {"partial": "he"}
       val text = extractText(jsonResult)
+      Log.d(TAG, "[VOSK] parseAndEmit isFinal=$isFinal text=[$text]")
       if (text.isNotBlank()) {
         onTranscript?.invoke(text, isFinal)
       }
@@ -95,10 +98,19 @@ object VoskRecognizer {
   }
 
   private fun extractText(json: String): String {
+    // Vosk final: {"result": [...], "text": "hello"}
     val textMatch = Regex(""""text"\s*:\s*"([^"]*)"""").find(json)
-    if (textMatch != null) return textMatch.groupValues[1]
+    if (textMatch != null) {
+      val value = textMatch.groupValues[1]
+      if (value.isNotBlank()) return value
+    }
+    // Vosk partial: {"partial": "he"}
     val partialMatch = Regex(""""partial"\s*:\s*"([^"]*)"""").find(json)
-    return partialMatch?.groupValues?.get(1) ?: ""
+    if (partialMatch != null) {
+      val value = partialMatch.groupValues[1]
+      if (value.isNotBlank()) return value
+    }
+    return ""
   }
 
   /**

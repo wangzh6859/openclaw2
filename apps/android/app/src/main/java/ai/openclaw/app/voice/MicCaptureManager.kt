@@ -536,11 +536,17 @@ class MicCaptureManager(
 
     // Wire up Vosk transcript handler
     ai.openclaw.app.voice.VoskRecognizer.onTranscript = { text, isFinal ->
+      Log.d("MicCapture", "[VOSK] transcript isFinal=$isFinal text=[$text]")
       if (isFinal && text.isNotBlank()) {
+        _liveTranscript.value = null
         queueRecognizedMessage(text)
         sendQueuedIfIdle()
         diagFinalCount += 1
         refreshDiagnostics("vosk-final")
+      } else if (!isFinal && text.isNotBlank()) {
+        // Show partial result so user sees live feedback
+        _liveTranscript.value = text
+        _statusText.value = "Hearing voice"
       }
     }
 
