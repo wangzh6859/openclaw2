@@ -50,6 +50,17 @@ class MicCaptureManager(
   private val sendToGateway: suspend (message: String, onRunIdKnown: (String) -> Unit) -> String?,
   private val speakAssistantReply: suspend (String) -> Unit = {},
 ) {
+  init {
+    // Initialize Vosk ASR in background (downloads model on first run)
+    ai.openclaw.app.voice.VoskRecognizer.init(
+      context = context,
+      scope = scope,
+      onReady = {
+        Log.d(tag, "[VOSK] Recognizer ready")
+      },
+    )
+  }
+
   companion object {
     private const val tag = "MicCapture"
     private const val speechMinSessionMs = 30_000L
@@ -353,17 +364,6 @@ class MicCaptureManager(
         completePendingTurn()
       }
     }
-  }
-
-    init {
-    // Initialize Vosk ASR in background (downloads model on first run)
-    ai.openclaw.app.voice.VoskRecognizer.init(
-      context = context,
-      scope = scope,
-      onReady = {
-        Log.d("MicCapture", "[VOSK] Recognizer ready")
-      },
-    )
   }
 
   private fun start() {

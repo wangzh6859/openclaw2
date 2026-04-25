@@ -19,18 +19,18 @@ import kotlin.math.sqrt
 
 /**
  * Direct audio input capture, bypassing Android's broken SpeechRecognizer.
+ *
+ * Captures 16kHz mono PCM via AudioRecord and optionally feeds PCM to
+ * an ASR callback (e.g. VoskRecognizer) for real-time transcription.
  */
 class VoiceInputCapture(
   private val context: Context,
   private val scope: CoroutineScope,
   private val onAudioFrame: suspend (FloatArray) -> Unit = {},
   private val onLevelChanged: (Float) -> Unit = {},
-  // Optional ASR callback: receives transcripts as they arrive during capture
+  // Optional: receive raw PCM bytes (16-bit mono 16kHz) for ASR
   private val onAsrFeed: (suspend (ByteArray) -> Unit)? = null,
 ) {
-  init {
-    pcmFeed = onAsrFeed
-  }
   companion object {
     private const val tag = "VoiceInputCapture"
     private const val sampleRate = 16_000
@@ -46,14 +46,12 @@ class VoiceInputCapture(
   private var audioRecord: AudioRecord? = null
   private var captureJob: Job? = null
   private var asrFeedJob: Job? = null
-  private var pcmFeed: (suspend (ByteArray) -> Unit)? = null
 
-  // PCM buffer for ASR (converted from 16-bit to float)
+  // PCM buffer for ASR
   private val asrBuffer = java.util.concurrent.ConcurrentLinkedQueue<FloatArray>()
 
   /**
    * Start audio capture. Returns true if capture started successfully.
-   * If false is returned, the device may not support audio recording.
    */
   fun startCapture(): Boolean {
     if (_isCapturing.value) return true
@@ -62,12 +60,9 @@ class VoiceInputCapture(
       return false
     }
 
-    // Initialize AudioRecord BEFORE setting _isCapturing = true
-    // This way we can return false if initialization fails
     val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-    Log.d(tag, "[FALLBACK] getMinBufferSize returned: $minBufferSize")
     if (minBufferSize <= 0) {
-      Log.e(tag, "[FALLBACK] Invalid buffer size: $minBufferSize, audio hardware may be unavailable")
+      Log.e(tag, "[FALLBACK] Invalid buffer size: $minBufferSize")
       return false
     }
 
@@ -75,7 +70,6 @@ class VoiceInputCapture(
 
     val record: AudioRecord
     try {
-      Log.d(tag, "[FALLBACK] Creating AudioRecord with buffer size: $effectiveBufferSize")
       record = AudioRecord(
         MediaRecorder.AudioSource.MIC,
         sampleRate,
@@ -88,11 +82,7 @@ class VoiceInputCapture(
       return false
     }
 
-
-    // Check if AudioRecord was successfully initialized
-    Log.d(tag, "[FALLBACK] AudioRecord state: ${record.state} (STATE_INITIALIZED=${AudioRecord.STATE_INITIALIZED})")
     if (record.state != AudioRecord.STATE_INITIALIZED) {
-      Log.e(tag, "[FALLBACK] AudioRecord not initialized, state=${record.state}")
       try { record.release() } catch (_: Throwable) { }
       return false
     }
@@ -114,7 +104,7 @@ class VoiceInputCapture(
             continue
           }
 
-          // Convert to float and compute RMS
+          // Convert to float and compute RMS level
           var sumSq = 0.0
           for (i in 0 until numRead) {
             val normalized = buffer[i] / 32768f
@@ -127,13 +117,16 @@ class VoiceInputCapture(
           val normalizedLevel = ((levelDb - silenceThresholdDb) / (-silenceThresholdDb)).coerceIn(0f, 1f)
           onLevelChanged(normalizedLevel)
 
-          // Send frame
+          // Notify listeners
           onAudioFrame(floatFrame.copyOfRange(0, numRead))
+
           // Buffer for ASR feed
           asrBuffer.offer(floatFrame.copyOfRange(0, numRead))
-          asrFeedJob?.cancel()
-          asrFeedJob = scope.launch(Dispatchers.Default) {
-            drainAsrBuffer()
+          if (onAsrFeed != null) {
+            asrFeedJob?.cancel()
+            asrFeedJob = scope.launch(Dispatchers.Default) {
+              drainAsrBuffer()
+            }
           }
         }
       } catch (err: Throwable) {
@@ -143,8 +136,7 @@ class VoiceInputCapture(
         try {
           record.stop()
           record.release()
-        } catch (_: Throwable) {
-        }
+        } catch (_: Throwable) { }
         audioRecord = null
       }
     }
@@ -154,8 +146,12 @@ class VoiceInputCapture(
 
   private suspend fun drainAsrBuffer() {
     val batch = mutableListOf<FloatArray>()
-    asrBuffer.drainTo(batch)
+    while (true) {
+      val item = asrBuffer.poll() ?: break
+      batch.add(item)
+    }
     if (batch.isEmpty()) return
+
     val totalSamples = batch.sumOf { it.size }
     val pcmBytes = ByteArray(totalSamples * 2)
     var offset = 0
@@ -166,7 +162,7 @@ class VoiceInputCapture(
         pcmBytes[offset++] = ((s.toInt() shr 8) and 0xFF).toByte()
       }
     }
-    pcmFeed?.invoke(pcmBytes)
+    onAsrFeed?.invoke(pcmBytes)
   }
 
   fun stopCapture() {
