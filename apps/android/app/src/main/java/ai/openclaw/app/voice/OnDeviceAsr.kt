@@ -11,16 +11,22 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.vosk.android.RecognitionListener
+import org.vosk.android.SpeechService
+import org.vosk.android.StorageService
+import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
+import java.util.zip.ZipInputStream
 
 /**
- * On-device ASR engine switcher.
+ * On-device ASR with priority: Google Speech Services → Vosk offline.
  *
- * Strategy:
- * 1. Google Speech Services (via system SpeechRecognizer) — tried first
- * 2. Vosk offline Chinese model — fallback after 3 consecutive Google CLIENT errors
- *
- * Both engines accept AudioRecord PCM via [onAudioFrame].  The Google engine uses the
- * standard Android listening flow; Vosk (not yet fully integrated) is a stub for now.
+ * Flow:
+ * 1. Try Google SpeechRecognizer first (uses Google Speech Services if available)
+ * 2. On 3 consecutive CLIENT/PERMISSION/BUSY errors, switch to Vosk
+ * 3. Vosk runs offline Chinese model, self-downloads on first run
  */
 class OnDeviceAsr(
   private val context: Context,
@@ -31,27 +37,38 @@ class OnDeviceAsr(
 ) {
   companion object {
     private const val TAG = "OnDeviceAsr"
-    // Threshold of consecutive CLIENT errors before switching to Vosk
     private const val GOOGLE_ERROR_STREAK_THRESHOLD = 3
+    // Vosk Chinese model — downloaded at runtime from alphacephei.com
+    private const val VOSK_MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-cn-0.3.zip"
+    private const val VOSK_MODEL_DIR = "vosk-model-cn-0.3"
+    private const val VOSK_SAMPLE_RATE = 16000f
   }
 
-  // ── State ────────────────────────────────────────────────────────────────────
+  // ── Google ─────────────────────────────────────────────────────────────────
 
-  private var recognizer: SpeechRecognizer? = null
-  private var clientErrorStreak = 0
+  private var googleRecognizer: SpeechRecognizer? = null
+  private var googleClientStreak = 0
+  private var googleActive = false
+
+  // ── Vosk ───────────────────────────────────────────────────────────────────
+
+  private var voskService: SpeechService? = null
   private var voskActive = false
 
-  // ── Public API ──────────────────────────────────────────────────────────────
+  // ── Engine selection ──────────────────────────────────────────────────────
 
-  /** Returns true if the Google recognizer started successfully. */
+  private var activeEngine: String = "google"
+
+  /** Start Google SpeechRecognizer. Returns true if it started. */
   fun startGoogle(): Boolean {
     if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-      Log.w(TAG, "Google SpeechRecognizer not available on this device")
+      Log.w(TAG, "Google SpeechRecognizer not available")
       return false
     }
     try {
-      recognizer?.destroy()
-      recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+      googleRecognizer?.destroy()
+      googleRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
+      activeEngine = "google"
       return true
     } catch (err: Throwable) {
       Log.e(TAG, "createSpeechRecognizer failed: ${err.message}")
@@ -59,38 +76,38 @@ class OnDeviceAsr(
     }
   }
 
-  /**
-   * Start continuous listening.
-   *
-   * For Google: starts a listening session and keeps re-starting after each result.
-   * For Vosk: a no-op stub (Vosk integration is TODO).
-   */
+  /** Start listening with current engine. */
   fun startListening() {
-    if (voskActive) {
-      Log.w(TAG, "Vosk listening is a stub — nothing to do")
-      return
+    when (activeEngine) {
+      "google" -> startGoogleListening()
+      "vosk" -> startVoskListening()
     }
-    startGoogleListening()
   }
 
   fun stop() {
     try {
-      recognizer?.stopListening()
-      recognizer?.cancel()
-      recognizer?.destroy()
+      googleRecognizer?.stopListening()
+      googleRecognizer?.cancel()
+      googleRecognizer?.destroy()
     } catch (_: Throwable) { }
-    recognizer = null
+    googleRecognizer = null
+
+    try {
+      voskService?.stop()
+      voskService?.shutdown()
+    } catch (_: Throwable) { }
+    voskService = null
   }
 
-  // ── Google implementation ───────────────────────────────────────────────────
+  // ── Google implementation ─────────────────────────────────────────────────
 
   private fun startGoogleListening() {
-    val rec = recognizer ?: run {
+    val rec = googleRecognizer ?: run {
       if (!startGoogle()) {
         onError("Google SpeechRecognizer unavailable")
         return
       }
-      recognizer!!
+      googleRecognizer!!
     }
 
     val locale = java.util.Locale.getDefault().toLanguageTag().ifBlank { "zh-CN" }
@@ -100,13 +117,13 @@ class OnDeviceAsr(
         putExtra(RecognizerIntent.EXTRA_LANGUAGE, locale)
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-        // Request offline if available
         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
       }
 
+    googleActive = true
     rec.setRecognitionListener(object : RecognitionListener {
       override fun onReadyForSpeech(params: Bundle?) {
-        clientErrorStreak = 0
+        googleClientStreak = 0
       }
 
       override fun onBeginningOfSpeech() {}
@@ -132,9 +149,9 @@ class OnDeviceAsr(
         if (!text.isNullOrBlank()) {
           onTranscript(text, true)
         }
-        clientErrorStreak = 0
+        googleClientStreak = 0
         // Re-start for next utterance
-        if (!voskActive) {
+        if (activeEngine == "google" && googleActive) {
           scope.launch {
             delay(200L)
             startGoogleListening()
@@ -154,26 +171,25 @@ class OnDeviceAsr(
           SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "SPEECH_TIMEOUT"
           else -> "UNKNOWN($error)"
         }
-        Log.w(TAG, "Google onError: $errorName (streak=$clientErrorStreak)")
+        Log.w(TAG, "Google onError: $errorName (streak=$googleClientStreak)")
 
-        val isClientError =
+        val isFatalError =
           error == SpeechRecognizer.ERROR_CLIENT ||
             error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ||
             error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY
 
-        if (isClientError) {
-          clientErrorStreak++
-          if (clientErrorStreak >= GOOGLE_ERROR_STREAK_THRESHOLD) {
-            Log.w(TAG, "Google error streak reached $GOOGLE_ERROR_STREAK_THRESHOLD — switching to Vosk")
+        if (isFatalError) {
+          googleClientStreak++
+          if (googleClientStreak >= GOOGLE_ERROR_STREAK_THRESHOLD) {
+            Log.w(TAG, "Google error streak=$googleClientStreak → switching to Vosk")
             switchToVosk()
             return
           }
         }
 
-        // Retry after transient errors
         scope.launch {
           delay(800L)
-          startGoogleListening()
+          if (activeEngine == "google") startGoogleListening()
         }
       }
 
@@ -188,12 +204,127 @@ class OnDeviceAsr(
     }
   }
 
+  // ── Vosk implementation ─────────────────────────────────────────────────────
+
+  private fun startVoskListening() {
+    val modelDir = File(context.filesDir, VOSK_MODEL_DIR)
+
+    if (!modelDir.exists()) {
+      // Download and extract model
+      _downloadVoskModel(modelDir) { success ->
+        if (success) {
+          _initAndStartVosk(modelDir)
+        } else {
+          onError("Vosk model download failed")
+        }
+      }
+    } else {
+      _initAndStartVosk(modelDir)
+    }
+  }
+
+  private fun _initAndStartVosk(modelDir: File) {
+    try {
+      val listener = object : org.vosk.android.RecognitionListener {
+        override fun onPartialResult(partial: String?) {
+          if (!partial.isNullOrBlank()) {
+            onTranscript(partial, false)
+          }
+        }
+
+        override fun onResult(result: String?) {
+          if (!result.isNullOrBlank()) {
+            // Vosk result format: {"result" : [{"word": "你好", "conf": 0.95, "start": 0.0, "end": 1.0}], "text": "你好"}
+            onTranscript(result, true)
+          }
+        }
+
+        override fun onFinalResult(result: String?) {
+          onResult(result)
+        }
+
+        override fun onError(e: Exception?) {
+          Log.e(TAG, "Vosk error: ${e?.message}")
+        }
+
+        override fun onTimeout() {
+          Log.w(TAG, "Vosk timeout")
+          // Restart listening
+          if (voskActive) {
+            scope.launch {
+              delay(500L)
+              if (voskActive) startVoskListening()
+            }
+          }
+        }
+      }
+
+      voskService = SpeechService(
+        modelDir.absolutePath,
+        VOSK_SAMPLE_RATE,
+      )
+      voskService?.startListening(listener)
+      voskActive = true
+      activeEngine = "vosk"
+      onReady()
+      Log.d(TAG, "Vosk SpeechService started")
+    } catch (err: Throwable) {
+      Log.e(TAG, "Vosk init failed: ${err.message}")
+      onError("Vosk init failed: ${err.message}")
+    }
+  }
+
+  private fun _downloadVoskModel(modelDir: File, onComplete: (Boolean) -> Unit) {
+    scope.launch {
+      try {
+        val url = java.net.URL(VOSK_MODEL_URL)
+        val connection = url.openConnection() as java.net.HttpURLConnection
+        connection.connectTimeout = 30_000
+        connection.readTimeout = 120_000
+        connection.doInput = true
+
+        val inputStream: InputStream = connection.inputStream
+        val zipStream = ZipInputStream(inputStream)
+
+        // Extract to filesDir
+        var entry = zipStream.nextEntry
+        while (entry != null) {
+          val fileName = entry.name
+          if (fileName.endsWith("/")) {
+            // Directory entry — skip
+          } else {
+            // Strip model prefix if present
+            val safeName = fileName.substringAfter("$VOSK_MODEL_DIR/").ifBlank { fileName }
+            val outFile = File(modelDir.parentFile, safeName)
+            outFile.parentFile?.mkdirs()
+            FileOutputStream(outFile).use { fos ->
+              zipStream.copyTo(fos)
+            }
+          }
+          zipStream.closeEntry()
+          entry = zipStream.nextEntry
+        }
+        zipStream.close()
+
+        withContext(Dispatchers.Main) {
+          onComplete(true)
+        }
+      } catch (err: Throwable) {
+        Log.e(TAG, "Vosk model download failed: ${err.message}")
+        withContext(Dispatchers.Main) {
+          onComplete(false)
+        }
+      }
+    }
+  }
+
   private fun switchToVosk() {
-    recognizer?.cancel()
-    recognizer?.destroy()
-    recognizer = null
-    voskActive = true
-    onError("Vosk ASR is not yet integrated — using Google Speech Services only")
+    googleActive = false
+    googleRecognizer?.cancel()
+    googleRecognizer?.destroy()
+    googleRecognizer = null
+    activeEngine = "vosk"
     onReady()
+    startVoskListening()
   }
 }
