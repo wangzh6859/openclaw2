@@ -33,6 +33,7 @@ object VoskRecognizer {
   private var recognizer: Recognizer? = null
   private var ready = false
   private var downloadJobStarted = false
+  private var errorCount = 0
 
   // Text callback — wired by callers (MicCaptureManager)
   var onTranscript: ((String, Boolean) -> Unit)? = null
