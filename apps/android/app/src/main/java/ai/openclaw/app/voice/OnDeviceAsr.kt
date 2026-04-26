@@ -25,7 +25,8 @@ import java.io.FileOutputStream
 object VoskRecognizer {
   private const val TAG = "VoskAsr"
   private const val VOSK_MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-cn-0.3.zip"
-  private const val VOSK_MODEL_DIR = "vosk-model-cn-0.3"
+  private const val VOSK_MODEL_DIR = "vosk-model-cn-0.22"
+  private const val VOSK_ASSET_DIR = "vosk-model-cn-0.22"
   private const val VOSK_SAMPLE_RATE = 16000f
 
   private var model: Model? = null
@@ -133,14 +134,83 @@ object VoskRecognizer {
 
     val modelDir = File(context.filesDir, VOSK_MODEL_DIR)
 
-    if (!modelDir.exists()) {
-      Log.d(TAG, "Vosk model not found — downloading in background")
-      downloadModel(modelDir, scope) {
-        initModel(modelDir, onReady)
-      }
-    } else {
+    if (modelDir.exists() && modelDir.listFiles()?.isNotEmpty() == true) {
       Log.d(TAG, "Vosk model found at ${modelDir.absolutePath}")
       initModel(modelDir, onReady)
+      return
+    }
+
+    // Model not on device — try to copy from bundled assets
+    Log.d(TAG, "Vosk model not in filesDir, trying assets...")
+    scope.launch(Dispatchers.IO) {
+      val copied = copyFromAssets(context, modelDir)
+      if (copied) {
+        Log.d(TAG, "Vosk model copied from assets to ${modelDir.absolutePath}")
+        withContext(Dispatchers.Main) {
+          initModel(modelDir, onReady)
+        }
+      } else {
+        // Fall back to downloading
+        Log.d(TAG, "Vosk model not in assets — downloading in background")
+        downloadModel(modelDir, scope) {
+          initModel(modelDir, onReady)
+        }
+      }
+    }
+  }
+
+  private fun copyFromAssets(context: Context, modelDir: File): Boolean {
+    return try {
+      val assetManager = context.assets
+      val assetBase = VOSK_ASSET_DIR // "vosk-model-cn-0.22"
+
+      // List top-level entries in the asset directory
+      val entries = assetManager.list(assetBase) ?: return false
+      if (entries.isEmpty()) return false
+
+      modelDir.mkdirs()
+
+      for (entry in entries) {
+        val assetPath = "$assetBase/$entry"
+        val destFile = File(modelDir, entry)
+
+        // If it's a subdirectory, recursively copy its contents
+        if (entry.contains(".")) {
+          // It's a file — copy directly
+          assetManager.open(assetPath).use { input ->
+            FileOutputStream(destFile).use { output ->
+              input.copyTo(output)
+            }
+          }
+          Log.d(TAG, "Copied asset file: $entry")
+        } else {
+          // It's a subdirectory — copy recursively
+          copyAssetSubdir(assetManager, assetPath, destFile)
+          Log.d(TAG, "Copied asset subdir: $entry/")
+        }
+      }
+      true
+    } catch (e: Throwable) {
+      Log.e(TAG, "Failed to copy Vosk model from assets: ${e.message}")
+      false
+    }
+  }
+
+  private fun copyAssetSubdir(assetManager: android.content.res.AssetManager, assetPath: String, destDir: File) {
+    try {
+      destDir.mkdirs()
+      val subEntries = assetManager.list(assetPath) ?: return
+      for (subEntry in subEntries) {
+        val subAssetPath = "$assetPath/$subEntry"
+        val subDestFile = File(destDir, subEntry)
+        assetManager.open(subAssetPath).use { input ->
+          FileOutputStream(subDestFile).use { output ->
+            input.copyTo(output)
+          }
+        }
+      }
+    } catch (e: Throwable) {
+      Log.w(TAG, "Failed to copy asset subdir $assetPath: ${e.message}")
     }
   }
 
