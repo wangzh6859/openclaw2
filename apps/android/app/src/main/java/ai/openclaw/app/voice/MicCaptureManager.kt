@@ -50,6 +50,17 @@ class MicCaptureManager(
   private val sendToGateway: suspend (message: String, onRunIdKnown: (String) -> Unit) -> String?,
   private val speakAssistantReply: suspend (String) -> Unit = {},
 ) {
+  init {
+    // Initialize Vosk ASR in background (downloads model on first run)
+    ai.openclaw.app.voice.VoskRecognizer.init(
+      context = context,
+      scope = scope,
+      onReady = {
+        Log.d(tag, "[VOSK] Recognizer ready")
+      },
+    )
+  }
+
   companion object {
     private const val tag = "MicCapture"
     private const val speechMinSessionMs = 30_000L
@@ -356,41 +367,52 @@ class MicCaptureManager(
   }
 
   private fun start() {
-    stopRequested = false
-    recognizerBusyStreak = 0
-    refreshDiagnostics("start")
-    if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-      _statusText.value = "Speech recognizer unavailable"
-      _micEnabled.value = false
-      return
-    }
-    if (!hasMicPermission()) {
-      _statusText.value = "Microphone permission required"
-      _micEnabled.value = false
-      return
+        stopRequested = false
+        recognizerBusyStreak = 0
+        refreshDiagnostics("start")
+
+        // Check system STT availability first
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            Log.w("MicCapture", "System STT unavailable, using fallback")
+            startFallbackVoiceCapture()
+            return
+        }
+
+        if (!hasMicPermission()) {
+            // Don't reset _micEnabled here - just show error and let user handle permission
+            _statusText.value = "Mic off (permission needed)"
+            // Instead of resetting, we should keep the state as-is and let user grant permission
+            // But to avoid confusion, we do reset - just don't call start() again
+            return
+        }
+
+        mainHandler.post {
+            try {
+                // Always recreate on mic start to avoid stale/busy recognizer instances
+                try { recognizer?.cancel() } catch (_: Throwable) { }
+                try { recognizer?.destroy() } catch (_: Throwable) { }
+
+                recognizer = SpeechRecognizer.createSpeechRecognizer(context).also {
+                    it.setRecognitionListener(listener)
+                }
+                startListeningSession()
+                
+                // Force immediate fallback to test AudioRecord
+                scope.launch {
+                    delay(500L)
+                    if (!_isListening.value) {
+                        Log.w("MicCapture", "[FALLBACK] Recognizer not listening after 500ms, forcing fallback")
+                        startFallbackVoiceCapture()
+                    }
+                }
+            } catch (err: Throwable) {
+                Log.w("MicCapture", "System STT failed, switching to fallback: ${err.message}")
+                // System STT failed, switch to fallback immediately
+                startFallbackVoiceCapture()
+            }
+        }
     }
 
-    mainHandler.post {
-      try {
-        // Always recreate on mic start to avoid stale/busy recognizer instances
-        // left behind by previous app lifecycle or OEM speech service quirks.
-        try {
-          recognizer?.cancel()
-        } catch (_: Throwable) {
-        }
-        try {
-          recognizer?.destroy()
-        } catch (_: Throwable) {
-        }
-        recognizer = SpeechRecognizer.createSpeechRecognizer(context).also { it.setRecognitionListener(listener) }
-        startListeningSession()
-      } catch (err: Throwable) {
-        _statusText.value = "Start failed: ${err.message ?: err::class.simpleName}"
-        _micEnabled.value = false
-        refreshDiagnostics("start-failed")
-      }
-    }
-  }
 
   private fun stop() {
     stopRequested = true
@@ -478,6 +500,7 @@ class MicCaptureManager(
 
   private fun startFallbackVoiceCapture() {
     if (fallbackActive) return
+    Log.d("MicCapture", "[FALLBACK] Starting fallback voice capture")
     fallbackActive = true
     fallbackAudioFrames.clear()
     fallbackSilenceCounter = 0
@@ -486,7 +509,7 @@ class MicCaptureManager(
     diagReadyCount += 1
     refreshDiagnostics("fallback-start")
 
-    voiceInputCapture =
+    val capture =
       VoiceInputCapture(
         context = context,
         scope = scope,
@@ -505,8 +528,39 @@ class MicCaptureManager(
             fallbackSilenceCounter += 1
           }
         },
+        onAsrFeed = { pcmBytes ->
+          // Feed raw PCM to Vosk recognizer
+          ai.openclaw.app.voice.VoskRecognizer.feedPcm(pcmBytes)
+        },
       )
-    voiceInputCapture?.startCapture()
+
+    // Wire up Vosk transcript handler
+    ai.openclaw.app.voice.VoskRecognizer.onTranscript = { text, isFinal ->
+      Log.d("MicCapture", "[VOSK] transcript isFinal=$isFinal text=[$text]")
+      if (isFinal && text.isNotBlank()) {
+        _liveTranscript.value = null
+        queueRecognizedMessage(text)
+        sendQueuedIfIdle()
+        diagFinalCount += 1
+        refreshDiagnostics("vosk-final")
+      } else if (!isFinal && text.isNotBlank()) {
+        // Show partial result so user sees live feedback
+        _liveTranscript.value = text
+        _statusText.value = "Hearing voice"
+      }
+    }
+
+    // Start capture and check result
+    if (!capture.startCapture()) {
+      Log.e("MicCapture", "[FALLBACK] startCapture() returned false — AudioRecord init failed")
+      _statusText.value = "Mic unavailable"
+      _isListening.value = false
+      _micEnabled.value = false
+      fallbackActive = false
+      return
+    }
+    Log.d("MicCapture", "[FALLBACK] startCapture() returned true — capture is running")
+    voiceInputCapture = capture
   }
 
   private fun stopFallbackVoiceCapture() {
@@ -516,14 +570,10 @@ class MicCaptureManager(
     voiceInputCapture = null
     _inputLevel.value = 0f
 
-    if (fallbackAudioFrames.isNotEmpty()) {
-      val durationMs = (fallbackAudioFrames.size * 10).toLong()
-      val transcript = "[Audio: ${durationMs}ms captured]"
-      queueRecognizedMessage(transcript)
-      sendQueuedIfIdle()
-      diagFinalCount += 1
-      refreshDiagnostics("fallback-done")
-    }
+    // Flush Vosk to get any remaining final result
+    ai.openclaw.app.voice.VoskRecognizer.flush()
+    ai.openclaw.app.voice.VoskRecognizer.reset()
+
     fallbackAudioFrames.clear()
     fallbackSilenceCounter = 0
     clearSpeechDetected("fallback-stop")

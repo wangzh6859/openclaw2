@@ -65,8 +65,8 @@ android {
         applicationId = "ai.openclaw.app"
         minSdk = 31
         targetSdk = 36
-        versionCode = 2026042200
-        versionName = "2026.4.22"
+        versionCode = 2026042500
+        versionName = "2026.4.25"
         ndk {
             // Support all major ABIs — native libs are tiny (~47 KB per ABI)
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
@@ -225,6 +225,7 @@ dependencies {
 
     // Unicast DNS-SD (Wide-Area Bonjour) for tailnet discovery domains.
     implementation("dnsjava:dnsjava:3.6.4")
+    implementation("com.alphacephei:vosk-android:0.3.47")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
