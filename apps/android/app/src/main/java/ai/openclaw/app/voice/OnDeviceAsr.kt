@@ -42,7 +42,11 @@ object VoskRecognizer {
    * pcmBytes must be little-endian 16-bit PCM at 16kHz.
    */
   fun feedPcm(pcmBytes: ByteArray) {
-    val rec = recognizer ?: return
+    val rec = recognizer
+    if (rec == null) {
+      Log.w(TAG, "feedPcm called but recognizer is null")
+      return
+    }
     if (pcmBytes.isEmpty()) return
 
     // Convert 16-bit PCM bytes to float samples
@@ -216,16 +220,19 @@ object VoskRecognizer {
 
   private fun initModel(modelDir: File, onReady: () -> Unit) {
     try {
+      Log.d(TAG, "initModel: loading from ${modelDir.absolutePath}")
       model = Model(modelDir.absolutePath)
       recognizer = Recognizer(model!!, VOSK_SAMPLE_RATE).apply {
         setMaxAlternatives(0)
         setWords(false)
       }
       ready = true
+      errorCount = 0
       onReady()
       Log.d(TAG, "Vosk recognizer ready")
     } catch (e: Throwable) {
-      Log.e(TAG, "Vosk init failed: ${e.message}")
+      errorCount++
+      Log.e(TAG, "Vosk init failed (attempt $errorCount): ${e.message}", e)
     }
   }
 
